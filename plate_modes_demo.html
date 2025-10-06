@@ -106,6 +106,11 @@
         <input id="drive-y" type="range" min="0" max="1" step="0.01" value="0.4" />
       </div>
 
+      <div class="row toggle">
+        <input type="checkbox" id="show-infinite" checked />
+        <label for="show-infinite" style="margin:0;">Show infinite plate mobility</label>
+      </div>
+
       <h2>View Controls</h2>
       <div class="row">
         <label for="view-azimuth">Azimuth (°)</label>
@@ -180,7 +185,8 @@ const state = {
   elevationDeg: 55,
   baseRadius: 2.0,
   zoomPercent: 100,
-  updatingCamera: false
+  updatingCamera: false,
+  showInfinite: true
 };
 
 function readInputs() {
@@ -194,6 +200,7 @@ function readInputs() {
   const driveX = Math.min(Math.max(parseFloat(document.getElementById('drive-x').value) || 0, 0), 1);
   const driveY = Math.min(Math.max(parseFloat(document.getElementById('drive-y').value) || 0, 0), 1);
   const animate = document.getElementById('animate').checked;
+  const showInfinite = document.getElementById('show-infinite').checked;
   return {
     length,
     width,
@@ -206,7 +213,8 @@ function readInputs() {
     activeMode,
     driveX,
     driveY,
-    animate
+    animate,
+    showInfinite
   };
 }
 
@@ -322,7 +330,16 @@ function computeMobility(modes, params) {
     return { freq: mode.freq, value: peak };
   });
 
-  return { freqAxis, mobilityMag, peaks };
+  const infiniteMobility = computeInfiniteMobility(params, freqAxis);
+
+  return { freqAxis, mobilityMag, peaks, infinite: infiniteMobility };
+}
+
+function computeInfiniteMobility(params, freqAxis) {
+  const { thickness, density, young, nu } = params;
+  const bendingStiffness = young * Math.pow(thickness, 3) / (12 * (1 - nu * nu));
+  const coeff = 1 / (8 * Math.sqrt(Math.max(bendingStiffness * density * thickness, 1e-18)));
+  return freqAxis.map(() => coeff);
 }
 
 function buildModePlot(data) {
@@ -497,6 +514,17 @@ function buildMobilityPlot(mobility, data) {
     name: 'Resonance estimate'
   };
 
+  const traces = [traceMob, tracePeaks];
+  if (state.showInfinite && mobility.infinite) {
+    traces.push({
+      x: mobility.freqAxis,
+      y: mobility.infinite,
+      mode: 'lines',
+      line: { color: '#8bd6ff', width: 2, dash: 'dot' },
+      name: 'Infinite plate |Y|'
+    });
+  }
+
   const layout = {
     paper_bgcolor: 'rgba(0,0,0,0)',
     plot_bgcolor: 'rgba(0,0,0,0)',
@@ -516,7 +544,7 @@ function buildMobilityPlot(mobility, data) {
     legend: { orientation: 'h', y: -0.25, x: 0.05 }
   };
 
-  Plotly.newPlot('mobility-plot', [traceMob, tracePeaks], layout, { responsive: true, displayModeBar: false });
+  Plotly.newPlot('mobility-plot', traces, layout, { responsive: true, displayModeBar: false });
 }
 
 function updateDerivedPanel(data, params) {
@@ -556,6 +584,7 @@ function updatePlots() {
   state.driveX = rawInputs.driveX;
   state.driveY = rawInputs.driveY;
   state.animate = rawInputs.animate;
+  state.showInfinite = rawInputs.showInfinite;
 
   state.heightScale = Math.max(0.02, Math.min(rawInputs.length, rawInputs.width) * 0.35);
   state.phase = 0;
@@ -570,6 +599,7 @@ function updatePlots() {
   const azControl = document.getElementById('view-azimuth');
   const elControl = document.getElementById('view-elevation');
   const zoomControl = document.getElementById('view-zoom');
+  const infiniteControl = document.getElementById('show-infinite');
   if (azControl) {
     azControl.value = state.azimuthDeg;
   }
@@ -578,6 +608,9 @@ function updatePlots() {
   }
   if (zoomControl) {
     zoomControl.value = state.zoomPercent;
+  }
+  if (infiniteControl) {
+    infiniteControl.checked = state.showInfinite;
   }
 
   const data = computePlateModes(rawInputs);
@@ -678,9 +711,11 @@ function resetDefaults() {
   document.getElementById('view-azimuth').value = 225;
   document.getElementById('view-elevation').value = 55;
   document.getElementById('view-zoom').value = 100;
+  document.getElementById('show-infinite').checked = true;
   state.azimuthDeg = 225;
   state.elevationDeg = 55;
   state.zoomPercent = 100;
+  state.showInfinite = true;
   updatePlots();
 }
 
@@ -700,6 +735,12 @@ document.getElementById('drive-y').addEventListener('input', () => {
 
 document.getElementById('mode-index').addEventListener('input', () => {
   updatePlots();
+});
+
+document.getElementById('show-infinite').addEventListener('change', () => {
+  state.showInfinite = document.getElementById('show-infinite').checked;
+  const mobility = computeMobility(state.modes, state.params);
+  buildMobilityPlot(mobility, state);
 });
 
 document.getElementById('view-azimuth').addEventListener('input', (evt) => {
