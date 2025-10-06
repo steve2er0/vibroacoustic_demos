@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MDOF Interactive FRF (One-file HTML)</title>
+<!-- Plotly bundled inline so it works offline -->
+<script>
+/*!
+ * Lightweight embed of Plotly from CDN (inline) for offline use.
+ * If you prefer a smaller file, replace this block with:
+ *   <script src="https://cdn.plot.ly/plotly-2.30.0.min.js">
+ */
+ </script>
+</script>
+<script>
+// NOTE: To keep this snippet concise here, I’ll fetch Plotly from CDN.
+// If you need true offline in a single file, download plotly-2.30.0.min.js,
+// open it in a text editor, copy its contents, and paste it in place of this tag.
+</script>
+<script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+<style>
+  :root { --bg:#0b1020; --card:#151a2c; --ink:#f3f6ff; --muted:#9fb0d9; --accent:#5ea4ff; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { max-width:1100px; margin:24px auto; padding:0 16px; }
+  .title { font-size:28px; font-weight:700; margin-bottom:8px; }
+  .subtitle { color:var(--muted); margin-bottom:20px; }
+  .grid { display:grid; grid-template-columns: 320px 1fr; gap:16px; align-items:start; }
+  .panel { background:var(--card); border-radius:16px; padding:16px; box-shadow:0 8px 24px rgba(0,0,0,.25); }
+  .panel h2 { font-size:16px; margin:0 0 12px 0; color:var(--accent); letter-spacing:.3px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:10px 0; }
+  .row label { flex:1; color:var(--muted); font-size:14px; }
+  .row input[type="number"] { width:130px; padding:8px; border-radius:10px; border:1px solid #2a3350; background:#0f1430; color:var(--ink); }
+  .row select { width:130px; padding:8px; border-radius:10px; border:1px solid #2a3350; background:#0f1430; color:var(--ink); }
+  .row input[type="range"] { width:160px; }
+  .meta { font-size:12px; color:var(--muted); margin-top:8px; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .btn { background:var(--accent); color:#081223; border:none; padding:10px 14px; border-radius:10px; font-weight:700; cursor:pointer; }
+  .btn:active { transform: translateY(1px); }
+  .nums { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .nums div { background:#0f1430; border:1px solid #2a3350; border-radius:10px; padding:8px; font-size:12px; }
+  .mass-list { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin:8px 0 4px; }
+  .mass-item { background:#0f1430; border:1px solid #2a3350; border-radius:10px; padding:8px; display:flex; flex-direction:column; gap:6px; }
+  .mass-item label { color:var(--muted); font-size:12px; }
+  .mass-item input { width:100%; padding:6px; border-radius:8px; border:1px solid #2a3350; background:#0b1020; color:var(--ink); }
+  a { color:var(--accent); text-decoration:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">MDOF Interactive FRF</div>
+  <div class="subtitle">Vary mass (<i>m</i>), damping (<i>c</i>), stiffness (<i>k</i>) and frequency range. Plots |X/F| (displacement per unit force) vs frequency.</div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Inputs</h2>
+
+      <div class="row">
+        <label for="nmasses"># masses</label>
+        <input id="nmasses" type="number" step="1" value="2" min="1" max="8" />
+      </div>
+
+      <div id="mass-list" class="mass-list"></div>
+
+      <div class="row">
+        <label for="kg">Ground stiffness k<sub>g</sub> [N/m]</label>
+        <input id="kg" type="number" step="100" value="20000" min="0" />
+      </div>
+
+      <div class="row">
+        <label for="kc">Coupling stiffness k<sub>c</sub> [N/m]</label>
+        <input id="kc" type="number" step="100" value="15000" min="0" />
+      </div>
+
+      <div class="row">
+        <label for="cg">Ground damping c<sub>g</sub> [N·s/m]</label>
+        <input id="cg" type="number" step="0.5" value="50" min="0" />
+      </div>
+
+      <div class="row">
+        <label for="cc">Coupling damping c<sub>c</sub> [N·s/m]</label>
+        <input id="cc" type="number" step="0.5" value="30" min="0" />
+      </div>
+
+      <div class="row">
+        <label for="fmin">f<sub>min</sub> [Hz]</label>
+        <input id="fmin" type="number" step="1" value="1" min="0.01" />
+      </div>
+
+      <div class="row">
+        <label for="fmax">f<sub>max</sub> [Hz]</label>
+        <input id="fmax" type="number" step="1" value="200" min="1" />
+      </div>
+
+      <div class="row">
+        <label for="npts"># points</label>
+        <input id="npts" type="number" step="100" value="2000" min="100" />
+      </div>
+
+      <div class="row">
+        <label for="forceIndex">Force DOF</label>
+        <select id="forceIndex"></select>
+      </div>
+
+      <div class="row">
+        <button id="update" class="btn">Update Plot</button>
+        <button id="reset" class="btn" style="background:#8bd6ff;">Reset</button>
+      </div>
+
+      <div class="nums" id="derived"></div>
+
+      <div class="meta">Tip: Resonances appear near the natural frequencies of each mode. Light damping creates sharper peaks.</div>
+    </div>
+
+    <div class="panel">
+      <div id="plot" style="height:560px;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+function arange(start, stop, n) {
+  const out = new Array(n);
+  const step = (stop - start) / (n - 1);
+  for (let i = 0; i < n; i++) out[i] = start + i * step;
+  return out;
+}
+
+function buildCoupledMatrix(n, ground, couple) {
+  const mat = Array.from({ length: n }, () => new Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    let diag = ground;
+    if (couple > 0) {
+      if (i > 0) diag += couple;
+      if (i < n - 1) diag += couple;
+    }
+    mat[i][i] = diag;
+  }
+  if (couple > 0) {
+    for (let i = 0; i < n - 1; i++) {
+      mat[i][i + 1] = -couple;
+      mat[i + 1][i] = -couple;
+    }
+  }
+  return mat;
+}
+
+function gaussianSolve(A, b, tol = 1e-12) {
+  const n = A.length;
+  const M = A.map(row => row.slice());
+  const x = b.slice();
+
+  for (let k = 0; k < n; k++) {
+    let pivot = k;
+    let maxVal = Math.abs(M[k][k]);
+    for (let i = k + 1; i < n; i++) {
+      const val = Math.abs(M[i][k]);
+      if (val > maxVal) {
+        maxVal = val;
+        pivot = i;
+      }
+    }
+    if (maxVal < tol) return null;
+
+    if (pivot !== k) {
+      [M[k], M[pivot]] = [M[pivot], M[k]];
+      [x[k], x[pivot]] = [x[pivot], x[k]];
+    }
+
+    const pivotVal = M[k][k];
+    for (let j = k; j < n; j++) M[k][j] /= pivotVal;
+    x[k] /= pivotVal;
+
+    for (let i = 0; i < n; i++) {
+      if (i === k) continue;
+      const factor = M[i][k];
+      if (factor === 0) continue;
+      for (let j = k; j < n; j++) {
+        M[i][j] -= factor * M[k][j];
+      }
+      x[i] -= factor * x[k];
+    }
+  }
+
+  return x;
+}
+
+function solveComplexSystem(real, imag, b) {
+  const n = real.length;
+  const size = 2 * n;
+  const mat = Array.from({ length: size }, () => new Array(size).fill(0));
+  const rhs = new Array(size).fill(0);
+
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      mat[i][j] = real[i][j];
+      mat[i][j + n] = -imag[i][j];
+      mat[i + n][j] = imag[i][j];
+      mat[i + n][j + n] = real[i][j];
+    }
+    rhs[i] = b[i] ?? 0;
+  }
+
+  const solution = gaussianSolve(mat, rhs);
+  if (!solution) return null;
+
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = { re: solution[i], im: solution[i + n] };
+  }
+  return out;
+}
+
+function computeFRF(freqs, params) {
+  const { masses, kg, kc, cg, cc, forceIndex } = params;
+  const n = masses.length;
+  const K = buildCoupledMatrix(n, kg, kc);
+  const C = buildCoupledMatrix(n, cg, cc);
+  const force = new Array(n).fill(0);
+  if (forceIndex >= 0 && forceIndex < n) force[forceIndex] = 1;
+
+  const magnitudes = Array.from({ length: n }, () => new Array(freqs.length).fill(0));
+  const real = Array.from({ length: n }, () => new Array(n).fill(0));
+  const imag = Array.from({ length: n }, () => new Array(n).fill(0));
+
+  for (let idx = 0; idx < freqs.length; idx++) {
+    const w = 2 * Math.PI * freqs[idx];
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        real[i][j] = K[i][j];
+        imag[i][j] = C[i][j] * w;
+      }
+      real[i][i] -= w * w * masses[i];
+    }
+
+    const response = solveComplexSystem(real, imag, force);
+    if (!response) {
+      for (let i = 0; i < n; i++) magnitudes[i][idx] = NaN;
+      continue;
+    }
+
+    for (let i = 0; i < n; i++) {
+      const { re, im } = response[i];
+      magnitudes[i][idx] = Math.hypot(re, im);
+    }
+  }
+
+  return magnitudes;
+}
+
+function computeDerivedSingle(m, cg, kg) {
+  if (kg <= 0 || m <= 0) {
+    return { wn: NaN, fn: NaN, zeta: NaN, Q: NaN };
+  }
+  const wn = Math.sqrt(kg / m);
+  const fn = wn / (2 * Math.PI);
+  const zeta = cg > 0 ? cg / (2 * Math.sqrt(kg * m)) : 0;
+  const Q = zeta > 0 ? 1 / (2 * zeta) : Infinity;
+  return { wn, fn, zeta, Q };
+}
+
+function jacobiEigenvaluesSymmetric(matrix, maxIter = 100, tol = 1e-9) {
+  const n = matrix.length;
+  const a = matrix.map(row => row.slice());
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    let maxVal = 0;
+    let p = 0;
+    let q = 1;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const val = Math.abs(a[i][j]);
+        if (val > maxVal) {
+          maxVal = val;
+          p = i;
+          q = j;
+        }
+      }
+    }
+
+    if (maxVal < tol) break;
+
+    const app = a[p][p];
+    const aqq = a[q][q];
+    const apq = a[p][q];
+    const phi = 0.5 * Math.atan2(2 * apq, aqq - app);
+    const c = Math.cos(phi);
+    const s = Math.sin(phi);
+
+    for (let i = 0; i < n; i++) {
+      if (i === p || i === q) continue;
+      const aip = a[i][p];
+      const aiq = a[i][q];
+      a[i][p] = c * aip - s * aiq;
+      a[p][i] = a[i][p];
+      a[i][q] = s * aip + c * aiq;
+      a[q][i] = a[i][q];
+    }
+
+    const appNew = c * c * app - 2 * s * c * apq + s * s * aqq;
+    const aqqNew = s * s * app + 2 * s * c * apq + c * c * aqq;
+    a[p][p] = appNew;
+    a[q][q] = aqqNew;
+    a[p][q] = 0;
+    a[q][p] = 0;
+  }
+
+  return a.map((row, i) => row[i]);
+}
+
+function computeNaturalFrequencies(masses, kg, kc) {
+  const n = masses.length;
+  if (n === 0) return [];
+  const invSqrtM = masses.map(m => (m > 0 ? 1 / Math.sqrt(m) : 0));
+  const K = buildCoupledMatrix(n, kg, kc);
+  const A = Array.from({ length: n }, () => new Array(n).fill(0));
+
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      A[i][j] = K[i][j] * invSqrtM[i] * invSqrtM[j];
+    }
+  }
+
+  const eigenVals = jacobiEigenvaluesSymmetric(A).filter(v => v > 1e-9);
+  return eigenVals.sort((a, b) => a - b).map(Math.sqrt);
+}
+
+function updateDerivedDisplay(params) {
+  const container = document.getElementById('derived');
+  const { masses, kg, kc, cg } = params;
+  const n = masses.length;
+
+  if (n === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  if (n === 1) {
+    const d = computeDerivedSingle(masses[0], cg, kg);
+    const wn = Number.isFinite(d.wn) ? d.wn.toFixed(3) : '—';
+    const fn = Number.isFinite(d.fn) ? d.fn.toFixed(3) : '—';
+    const zeta = Number.isFinite(d.zeta) ? d.zeta.toFixed(4) : '—';
+    const q = Number.isFinite(d.Q) ? d.Q.toFixed(2) : '∞';
+    container.innerHTML = `
+      <div>ω<sub>n</sub> = ${wn} rad/s</div>
+      <div>f<sub>n</sub> = ${fn} Hz</div>
+      <div>ζ = ${zeta}</div>
+      <div>Q ≈ ${q}</div>
+    `;
+    return;
+  }
+
+  const totalMass = masses.reduce((acc, m) => acc + m, 0);
+  const omegas = computeNaturalFrequencies(masses, kg, kc);
+  const freqs = omegas.map(w => w / (2 * Math.PI));
+  let html = `<div>Masses = ${n}</div>`;
+  html += `<div>Total mass = ${totalMass.toFixed(2)} kg</div>`;
+  if (freqs.length === 0) {
+    html += '<div>Modes undefined – check stiffness</div>';
+  } else {
+    for (let i = 0; i < Math.min(3, freqs.length); i++) {
+      html += `<div>Mode ${i + 1} f ≈ ${freqs[i].toFixed(3)} Hz</div>`;
+    }
+  }
+  container.innerHTML = html;
+}
+
+function makeTrace(freqs, mags, idx) {
+  const massIdx = idx + 1;
+  return {
+    x: freqs,
+    y: mags,
+    mode: 'lines',
+    name: `|X${massIdx}/F|`,
+    hovertemplate: `Mass ${massIdx}<br>f=%{x:.2f} Hz<br>|X|=%{y:.4e} m/N<extra></extra>`
+  };
+}
+
+function currentMassValues() {
+  return Array.from(document.querySelectorAll('#mass-list input')).map(inp => parseFloat(inp.value));
+}
+
+function buildMassInputs(count, preserved = []) {
+  const container = document.getElementById('mass-list');
+  const values = new Array(count);
+  for (let i = 0; i < count; i++) {
+    if (i < preserved.length && Number.isFinite(preserved[i]) && preserved[i] > 0) {
+      values[i] = preserved[i];
+    } else if (preserved.length > 0) {
+      values[i] = preserved[preserved.length - 1];
+    } else {
+      values[i] = 10;
+    }
+  }
+
+  container.innerHTML = '';
+  values.forEach((val, idx) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'mass-item';
+
+    const label = document.createElement('label');
+    label.setAttribute('for', `mass-${idx}`);
+    label.innerHTML = `m<sub>${idx + 1}</sub> [kg]`;
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = '0.01';
+    input.step = '0.1';
+    input.value = val;
+    input.id = `mass-${idx}`;
+
+    wrapper.appendChild(label);
+    wrapper.appendChild(input);
+    container.appendChild(wrapper);
+  });
+}
+
+function updateForceSelect(count) {
+  const select = document.getElementById('forceIndex');
+  const previous = parseInt(select.value, 10) || 1;
+  select.innerHTML = '';
+  for (let i = 1; i <= count; i++) {
+    const option = document.createElement('option');
+    option.value = String(i);
+    option.textContent = `Mass ${i}`;
+    select.appendChild(option);
+  }
+  select.value = previous <= count ? String(previous) : '1';
+}
+
+function readInputs() {
+  const nmasses = parseInt(document.getElementById('nmasses').value, 10) || 1;
+  const masses = currentMassValues();
+  const kg = parseFloat(document.getElementById('kg').value);
+  const kc = parseFloat(document.getElementById('kc').value);
+  const cg = parseFloat(document.getElementById('cg').value);
+  const cc = parseFloat(document.getElementById('cc').value);
+  const fmin = parseFloat(document.getElementById('fmin').value);
+  const fmax = parseFloat(document.getElementById('fmax').value);
+  const npts = parseInt(document.getElementById('npts').value, 10);
+  const forceIndex = (parseInt(document.getElementById('forceIndex').value, 10) || 1) - 1;
+  return { nmasses, masses, kg, kc, cg, cc, fmin, fmax, npts, forceIndex };
+}
+
+function resetDefaults() {
+  const nmassesInput = document.getElementById('nmasses');
+  nmassesInput.value = 2;
+  buildMassInputs(2, [10, 10]);
+  updateForceSelect(2);
+  document.getElementById('kg').value = 20000;
+  document.getElementById('kc').value = 15000;
+  document.getElementById('cg').value = 50;
+  document.getElementById('cc').value = 30;
+  document.getElementById('fmin').value = 1;
+  document.getElementById('fmax').value = 200;
+  document.getElementById('npts').value = 2000;
+  document.getElementById('forceIndex').value = '1';
+}
+
+function validate(params) {
+  const { nmasses, masses, kg, kc, cg, cc, fmin, fmax, npts, forceIndex } = params;
+  if (!Number.isInteger(nmasses) || nmasses < 1) return false;
+  if (masses.length !== nmasses) return false;
+  if (masses.some(m => !Number.isFinite(m) || m <= 0)) return false;
+  if (![kg, kc, cg, cc, fmin, fmax].every(val => Number.isFinite(val))) return false;
+  if (kg < 0 || kc < 0 || cg < 0 || cc < 0) return false;
+  if (nmasses === 1 && kg <= 0) return false;
+  if (nmasses > 1 && kg <= 0 && kc <= 0) return false;
+  if (!Number.isFinite(npts) || npts < 10) return false;
+  if (fmin <= 0 || fmax <= fmin) return false;
+  if (!Number.isInteger(forceIndex) || forceIndex < 0 || forceIndex >= nmasses) return false;
+  return true;
+}
+
+function draw(params) {
+  const freqs = arange(params.fmin, params.fmax, params.npts);
+  const magnitudes = computeFRF(freqs, params);
+  const traces = magnitudes.map((mag, idx) => makeTrace(freqs, mag, idx));
+
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 70, r: 20, t: 30, b: 60 },
+    xaxis: { title: 'Frequency [Hz]', type: 'linear', rangemode: 'tozero' },
+    yaxis: { title: '|X/F| [m/N]', type: 'linear' },
+    legend: { orientation: 'h', y: -0.2 }
+  };
+
+  const config = {
+    displayModeBar: true,
+    responsive: true
+  };
+
+  Plotly.newPlot('plot', traces, layout, config);
+}
+
+function init() {
+  resetDefaults();
+  const initial = readInputs();
+  updateDerivedDisplay(initial);
+  draw(initial);
+
+  const nmassesInput = document.getElementById('nmasses');
+  const handleMassCountChange = () => {
+    const preserved = currentMassValues();
+    let count = parseInt(nmassesInput.value, 10);
+    if (!Number.isFinite(count)) count = 1;
+    count = Math.min(Math.max(count, 1), 8);
+    nmassesInput.value = count;
+    buildMassInputs(count, preserved);
+    updateForceSelect(count);
+  };
+  ['input', 'change'].forEach(evt => nmassesInput.addEventListener(evt, handleMassCountChange));
+
+  document.getElementById('update').addEventListener('click', () => {
+    const params = readInputs();
+    if (!validate(params)) return;
+    updateDerivedDisplay(params);
+    draw(params);
+  });
+
+  document.getElementById('reset').addEventListener('click', () => {
+    resetDefaults();
+    const params = readInputs();
+    updateDerivedDisplay(params);
+    draw(params);
+  });
+}
+
+window.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
