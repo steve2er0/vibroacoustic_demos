@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Beam Modes & Mobility Explorer</title>
 <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.js"></script>
 <style>
   :root { --bg:#060b1a; --card:#121a32; --ink:#f2f6ff; --muted:#9ea9c9; --accent:#5ea4ff; --accent2:#f58f5d; }
   body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--ink); line-height:1.45; }
@@ -22,11 +24,14 @@
   .btn { background:var(--accent); color:#071224; border:none; padding:10px 14px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .15s ease; }
   .btn.alt { background:#8bd6ff; color:#071224; }
   .btn:active { transform:translateY(1px); }
+  .btn.small { padding:8px 12px; font-size:12px; }
   .nums { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-top:14px; }
   .nums div { background:#0d1327; border:1px solid #27324f; border-radius:12px; padding:12px; font-size:12px; }
   .plots { display:grid; grid-template-rows:minmax(300px,45vh) minmax(300px,45vh); gap:18px; }
   .plot-title { font-size:13px; color:var(--muted); margin-bottom:6px; font-weight:600; letter-spacing:.2px; }
   .toggle { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--muted); flex-direction:row; }
+  .record-controls { display:flex; align-items:center; justify-content:flex-end; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+  .record-label { color:var(--muted); font-size:13px; }
   @media (min-width:720px) {
     .row { flex-direction:row; align-items:center; justify-content:space-between; }
     .row label { flex:1; font-size:14px; }
@@ -40,6 +45,7 @@
   @media (max-width:720px) {
     .panel { padding:20px 18px; }
     .nums { grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+    .record-controls { justify-content:flex-start; }
   }
   @media (max-width:520px) {
     .wrap { margin:16px auto 32px; }
@@ -118,7 +124,11 @@
       <div class="nums" id="derived"></div>
     </div>
 
-    <div class="panel">
+    <div class="panel plots-panel">
+      <div class="record-controls">
+        <span class="record-label">Export GIF (~2 s loop)</span>
+        <button id="record-gif" class="btn small">Record GIF</button>
+      </div>
       <div class="plots">
         <div>
           <div class="plot-title">Mode shapes (stacked, first ten) – click to move the drive point</div>
@@ -621,6 +631,123 @@ document.getElementById('mode-index').addEventListener('input', () => {
 
 document.getElementById('update').addEventListener('click', updatePlots);
 document.getElementById('reset').addEventListener('click', resetDefaults);
+
+const recordButton = document.getElementById('record-gif');
+let recording = false;
+const CAPTURE_DURATION_MS = 2200; // cover a full animation cycle (~2.1 s)
+const FRAME_DELAY_MS = 34; // ≈30 fps to match on-screen motion smoothly
+const GIF_WORKER_SRC = 'https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js';
+let gifWorkerUrlPromise = null;
+let gifWorkerObjectUrl = null;
+
+if (recordButton) {
+  recordButton.addEventListener('click', async () => {
+    if (recording) return;
+    if (!window.html2canvas || !window.GIF) {
+      alert('GIF export requires html2canvas and gif.js. Check your connection and try again.');
+      return;
+    }
+    recording = true;
+    const originalText = recordButton.textContent;
+    recordButton.disabled = true;
+    recordButton.textContent = 'Recording…';
+    try {
+      const blob = await capturePlotsGif(CAPTURE_DURATION_MS, FRAME_DELAY_MS);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      downloadBlob(blob, `beam-modes-${timestamp}.gif`);
+    } catch (err) {
+      console.error(err);
+      alert('Sorry, something went wrong while building the GIF. Check the console for details.');
+    } finally {
+      recordButton.disabled = false;
+      recordButton.textContent = originalText;
+      recording = false;
+    }
+  });
+}
+
+async function capturePlotsGif(durationMs, frameDelayMs) {
+  const container = document.querySelector('.plots-panel');
+  if (!container) throw new Error('Plots container not found.');
+
+  const scale = Math.min(1.5, window.devicePixelRatio || 1);
+  const backgroundColor = getComputedStyle(document.body).backgroundColor || '#060b1a';
+  const delay = Math.max(20, Math.round(frameDelayMs));
+  const totalFrames = Math.max(1, Math.round(durationMs / delay));
+  const workerScript = await loadGifWorkerUrl();
+  if (!workerScript) throw new Error('Unable to load GIF worker script.');
+
+  const gif = new GIF({
+    workerScript,
+    quality: 12,
+    repeat: 0,
+    width: Math.round(container.offsetWidth * scale),
+    height: Math.round(container.offsetHeight * scale)
+  });
+
+  for (let frame = 0; frame < totalFrames; frame += 1) {
+    const canvas = await html2canvas(container, {
+      backgroundColor,
+      scale,
+      useCORS: true,
+      logging: false,
+      willReadFrequently: true
+    });
+    gif.addFrame(canvas, { delay, copy: true });
+    if (frame < totalFrames - 1) {
+      await sleep(delay);
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    gif.on('finished', blob => resolve(blob));
+    gif.on('abort', () => reject(new Error('GIF rendering aborted.')));
+    gif.on('error', reject);
+    gif.render();
+  });
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function loadGifWorkerUrl() {
+  if (!gifWorkerUrlPromise) {
+    gifWorkerUrlPromise = fetch(GIF_WORKER_SRC)
+      .then(resp => {
+        if (!resp.ok) throw new Error(`Failed to fetch GIF worker (${resp.status})`);
+        return resp.text();
+      })
+      .then(src => {
+        const blob = new Blob([src], { type: 'application/javascript' });
+        gifWorkerObjectUrl = URL.createObjectURL(blob);
+        return gifWorkerObjectUrl;
+      })
+      .catch(err => {
+        console.error('Failed to load gif.js worker', err);
+        return null;
+      });
+  }
+  return gifWorkerUrlPromise;
+}
+
+window.addEventListener('beforeunload', () => {
+  if (gifWorkerObjectUrl) {
+    URL.revokeObjectURL(gifWorkerObjectUrl);
+    gifWorkerObjectUrl = null;
+  }
+});
 
 window.addEventListener('DOMContentLoaded', () => {
   updatePlots();
