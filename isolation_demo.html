@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Isolation System FRF Explorer</title>
+<script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+<style>
+  :root { --bg:#081021; --card:#12182c; --ink:#f1f4ff; --muted:#97a5ce; --accent:#5ea4ff; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { max-width:1160px; margin:24px auto; padding:0 18px; }
+  .title { font-size:30px; font-weight:700; margin-bottom:8px; }
+  .subtitle { color:var(--muted); margin-bottom:24px; }
+  .grid { display:grid; grid-template-columns: 360px 1fr; gap:18px; align-items:start; }
+  .panel { background:var(--card); border-radius:16px; padding:18px; box-shadow:0 8px 24px rgba(0,0,0,.25); }
+  .panel h2 { font-size:16px; margin:0 0 12px 0; color:var(--accent); letter-spacing:.3px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:11px 0; }
+  .row label { flex:1; color:var(--muted); font-size:14px; }
+  .row input[type="number"], .row select { width:150px; padding:8px; border-radius:10px; border:1px solid #2a3350; background:#0e142d; color:var(--ink); }
+  .row input[type="checkbox"] { transform:scale(1.1); }
+  .btn { background:var(--accent); color:#071122; border:none; padding:10px 14px; border-radius:10px; font-weight:700; cursor:pointer; }
+  .btn.alt { background:#8bd6ff; color:#071122; }
+  .btn:active { transform:translateY(1px); }
+  .nums { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-top:12px; }
+  .nums div { background:#0d1531; border:1px solid #2a3350; border-radius:12px; padding:10px; font-size:12px; }
+  .iso-list { display:grid; gap:10px; margin:12px 0; }
+  .iso-item { background:#0d1531; border:1px solid #2a3350; border-radius:12px; padding:12px; }
+  .iso-item-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; font-size:13px; color:var(--muted); }
+  .iso-grid { display:grid; grid-template-columns:repeat(3, minmax(90px,1fr)); gap:10px; }
+  .iso-grid label { display:block; font-size:11px; color:var(--muted); margin-bottom:4px; }
+  .iso-grid input { width:100%; padding:6px; border-radius:8px; border:1px solid #2a3350; background:#0b132b; color:var(--ink); font-size:12px; }
+  .toggle-note { font-size:12px; color:var(--muted); margin-top:-6px; }
+  @media (max-width: 1024px) {
+    .grid { grid-template-columns:1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">Isolation System FRF Explorer</div>
+  <div class="subtitle">Start with a classic single-degree-of-freedom (SDOF) model, then introduce isolators to capture rigid-body translations and optional rocking modes.</div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>System Setup</h2>
+
+      <div class="row">
+        <label for="mode">Model type</label>
+        <select id="mode">
+          <option value="sdof">Single DOF</option>
+          <option value="isolated">Rigid body with isolators</option>
+        </select>
+      </div>
+
+      <div class="row">
+        <label for="mass">Mass m [kg]</label>
+        <input id="mass" type="number" value="100" step="1" min="1" />
+      </div>
+
+      <div id="sdof-only">
+        <div class="row">
+          <label for="k_primary">Primary stiffness k [N/m]</label>
+          <input id="k_primary" type="number" value="35000" step="100" min="1" />
+        </div>
+        <div class="row">
+          <label for="c_primary">Primary damping c [N·s/m]</label>
+          <input id="c_primary" type="number" value="600" step="1" min="0" />
+        </div>
+      </div>
+
+      <div id="isolated-only" style="display:none;">
+        <div class="row">
+          <label for="ixx">I<sub>xx</sub> [kg·m²]</label>
+          <input id="ixx" type="number" value="12" step="0.1" min="0" />
+        </div>
+        <div class="row">
+          <label for="iyy">I<sub>yy</sub> [kg·m²]</label>
+          <input id="iyy" type="number" value="18" step="0.1" min="0" />
+        </div>
+        <div class="row">
+          <label for="izz">I<sub>zz</sub> [kg·m²]</label>
+          <input id="izz" type="number" value="20" step="0.1" min="0" />
+        </div>
+        <div class="row">
+          <label for="rocking">Consider rocking (rx, ry, rz)</label>
+          <input id="rocking" type="checkbox" />
+        </div>
+        <div class="toggle-note">Disable to study vertical isolation modes only (component z vs platform z).</div>
+        <div class="row">
+          <label for="iso-count"># isolators</label>
+          <input id="iso-count" type="number" value="1" step="1" min="1" max="8" />
+        </div>
+        <div class="row">
+          <label for="platform-mass">Platform mass m<sub>p</sub> [kg]</label>
+          <input id="platform-mass" type="number" value="40" step="1" min="0" />
+        </div>
+        <div class="row" id="platform-inertia" style="display:none;">
+          <label>Platform inertias [kg·m²]</label>
+          <div style="display:grid; grid-template-columns:repeat(3, minmax(80px,1fr)); gap:8px;">
+            <input id="p-ixx" type="number" value="5" step="0.1" min="0" placeholder="Ixx" />
+            <input id="p-iyy" type="number" value="7" step="0.1" min="0" placeholder="Iyy" />
+            <input id="p-izz" type="number" value="8" step="0.1" min="0" placeholder="Izz" />
+          </div>
+        </div>
+        <div class="row">
+          <button id="layout-square" class="btn" type="button">Square layout</button>
+          <button id="layout-line" class="btn" type="button" style="background:#7ecbff; color:#071122;">Line layout</button>
+        </div>
+        <div class="iso-list" id="iso-list"></div>
+        <div class="row">
+          <label for="k_primary_iso">Central spring k<sub>c</sub> [N/m]</label>
+          <input id="k_primary_iso" type="number" value="2000" step="100" min="0" />
+        </div>
+        <div class="row">
+          <label for="c_primary_iso">Central damper c<sub>c</sub> [N·s/m]</label>
+          <input id="c_primary_iso" type="number" value="50" step="1" min="0" />
+        </div>
+      </div>
+
+      <h2>Frequency Range</h2>
+      <div class="row">
+        <label for="fmin">f<sub>min</sub> [Hz]</label>
+        <input id="fmin" type="number" value="0.5" step="0.1" min="0.01" />
+      </div>
+      <div class="row">
+        <label for="fmax">f<sub>max</sub> [Hz]</label>
+        <input id="fmax" type="number" value="60" step="0.5" min="0.5" />
+      </div>
+      <div class="row">
+        <label for="npts"># points</label>
+        <input id="npts" type="number" value="1200" step="100" min="200" />
+      </div>
+
+      <h2>Loading</h2>
+      <div class="row">
+        <label for="force-dof">Excite DOF</label>
+        <select id="force-dof"></select>
+      </div>
+
+      <div class="row">
+        <button id="update" class="btn">Update Plot</button>
+        <button id="reset" class="btn alt">Reset</button>
+      </div>
+
+      <div class="nums" id="derived"></div>
+    </div>
+
+    <div class="panel">
+      <div id="plot" style="height:620px;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+function arange(start, stop, n) {
+  const out = new Array(n);
+  const step = (stop - start) / (n - 1);
+  for (let i = 0; i < n; i++) out[i] = start + i * step;
+  return out;
+}
+
+function gaussianSolve(A, b, tol = 1e-12) {
+  const n = A.length;
+  const M = A.map(row => row.slice());
+  const x = b.slice();
+  for (let k = 0; k < n; k++) {
+    let pivot = k;
+    let maxVal = Math.abs(M[k][k]);
+    for (let i = k + 1; i < n; i++) {
+      const val = Math.abs(M[i][k]);
+      if (val > maxVal) {
+        maxVal = val;
+        pivot = i;
+      }
+    }
+    if (maxVal < tol) return null;
+    if (pivot !== k) {
+      [M[k], M[pivot]] = [M[pivot], M[k]];
+      [x[k], x[pivot]] = [x[pivot], x[k]];
+    }
+    const invPivot = 1 / M[k][k];
+    for (let j = k; j < n; j++) M[k][j] *= invPivot;
+    x[k] *= invPivot;
+    for (let i = 0; i < n; i++) {
+      if (i === k) continue;
+      const factor = M[i][k];
+      if (factor === 0) continue;
+      for (let j = k; j < n; j++) {
+        M[i][j] -= factor * M[k][j];
+      }
+      x[i] -= factor * x[k];
+    }
+  }
+  return x;
+}
+
+function solveComplexSystem(real, imag, rhs) {
+  const n = real.length;
+  const size = 2 * n;
+  const mat = Array.from({ length: size }, () => new Array(size).fill(0));
+  const vec = new Array(size).fill(0);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      mat[i][j] = real[i][j];
+      mat[i][j + n] = -imag[i][j];
+      mat[i + n][j] = imag[i][j];
+      mat[i + n][j + n] = real[i][j];
+    }
+    vec[i] = rhs[i] ?? 0;
+  }
+  const sol = gaussianSolve(mat, vec);
+  if (!sol) return null;
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) out[i] = { re: sol[i], im: sol[i + n] };
+  return out;
+}
+
+function jacobiEigenvaluesSymmetric(matrix, maxIter = 100, tol = 1e-9) {
+  const n = matrix.length;
+  const a = matrix.map(row => row.slice());
+  for (let iter = 0; iter < maxIter; iter++) {
+    let maxVal = 0;
+    let p = 0;
+    let q = 1;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const val = Math.abs(a[i][j]);
+        if (val > maxVal) {
+          maxVal = val;
+          p = i;
+          q = j;
+        }
+      }
+    }
+    if (maxVal < tol) break;
+    const app = a[p][p];
+    const aqq = a[q][q];
+    const apq = a[p][q];
+    const phi = 0.5 * Math.atan2(2 * apq, aqq - app);
+    const c = Math.cos(phi);
+    const s = Math.sin(phi);
+    for (let i = 0; i < n; i++) {
+      if (i === p || i === q) continue;
+      const aip = a[i][p];
+      const aiq = a[i][q];
+      a[i][p] = c * aip - s * aiq;
+      a[p][i] = a[i][p];
+      a[i][q] = s * aip + c * aiq;
+      a[q][i] = a[i][q];
+    }
+    const appNew = c * c * app - 2 * s * c * apq + s * s * aqq;
+    const aqqNew = s * s * app + 2 * s * c * apq + c * c * aqq;
+    a[p][p] = appNew;
+    a[q][q] = aqqNew;
+    a[p][q] = 0;
+    a[q][p] = 0;
+  }
+  return a.map((row, i) => row[i]);
+}
+
+function makeIsolatorDefaults(count, preserved) {
+  const defaults = [];
+  const fallback = { x: 0, y: 0, z: 0, kshear: 8000, kvert: 20000, cshear: 120, cvert: 250 };
+  for (let i = 0; i < count; i++) {
+    if (preserved && preserved[i]) {
+      defaults.push({ ...fallback, ...preserved[i] });
+    } else {
+      defaults.push({ ...fallback });
+    }
+  }
+  return defaults;
+}
+
+function buildIsolatorInputs(count, preserved) {
+  const container = document.getElementById('iso-list');
+  const values = makeIsolatorDefaults(count, preserved);
+  container.innerHTML = '';
+  values.forEach((val, idx) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'iso-item';
+    wrapper.dataset.index = idx;
+    wrapper.innerHTML = `
+      <div class="iso-item-header">Isolator ${idx + 1}</div>
+      <div class="iso-grid">
+        <div><label>x [m]</label><input type="number" step="0.01" value="${val.x}" data-field="x"></div>
+        <div><label>y [m]</label><input type="number" step="0.01" value="${val.y}" data-field="y"></div>
+        <div><label>z [m]</label><input type="number" step="0.01" value="${val.z}" data-field="z"></div>
+        <div><label>k<sub>shear</sub> [N/m]</label><input type="number" step="100" value="${val.kshear}" data-field="kshear"></div>
+        <div><label>k<sub>vert</sub> [N/m]</label><input type="number" step="100" value="${val.kvert}" data-field="kvert"></div>
+        <div><label>c<sub>shear</sub> [N·s/m]</label><input type="number" step="1" value="${val.cshear}" data-field="cshear"></div>
+        <div><label>c<sub>vert</sub> [N·s/m]</label><input type="number" step="1" value="${val.cvert}" data-field="cvert"></div>
+      </div>
+    `;
+    container.appendChild(wrapper);
+  });
+}
+
+function collectIsolators() {
+  return Array.from(document.querySelectorAll('.iso-item')).map(item => {
+    const obj = {};
+    item.querySelectorAll('input').forEach(input => {
+      obj[input.dataset.field] = parseFloat(input.value);
+    });
+    return obj;
+  });
+}
+
+function updateForceOptions(mode, rocking) {
+  const select = document.getElementById('force-dof');
+  const previous = select.value;
+  select.innerHTML = '';
+  let entries = [];
+  if (mode === 'sdof') {
+    entries = [{ value: 'c_fz', label: 'Component force: z' }];
+  } else if (!rocking) {
+    entries = [
+      { value: 'c_fz', label: 'Component force: z' },
+      { value: 'p_fz', label: 'Platform force: z' }
+    ];
+  } else {
+    const comp = [
+      { value: 'c_fx', label: 'Component force: x' },
+      { value: 'c_fy', label: 'Component force: y' },
+      { value: 'c_fz', label: 'Component force: z' },
+      { value: 'c_mx', label: 'Component moment: x (roll)' },
+      { value: 'c_my', label: 'Component moment: y (pitch)' },
+      { value: 'c_mz', label: 'Component moment: z (yaw)' }
+    ];
+    const platform = [
+      { value: 'p_fx', label: 'Platform force: x' },
+      { value: 'p_fy', label: 'Platform force: y' },
+      { value: 'p_fz', label: 'Platform force: z' },
+      { value: 'p_mx', label: 'Platform moment: x' },
+      { value: 'p_my', label: 'Platform moment: y' },
+      { value: 'p_mz', label: 'Platform moment: z' }
+    ];
+    entries = comp.concat(platform);
+  }
+  entries.forEach(entry => {
+    const opt = document.createElement('option');
+    opt.value = entry.value;
+    opt.textContent = entry.label;
+    select.appendChild(opt);
+  });
+  select.value = entries.some(e => e.value === previous) ? previous : entries[0]?.value || '';
+}
+
+function systemFromInputs(inputs) {
+  const { mode } = inputs;
+  if (mode === 'sdof') {
+    const M = [[inputs.mass]];
+    const C = [[inputs.cPrimary]];
+    const K = [[inputs.kPrimary]];
+    const force = [0];
+    if (inputs.forceDof === 'c_fz') force[0] = 1;
+    return { M, C, K, force, labels: ['Component z'], mode };
+  }
+
+  const includeRot = inputs.rocking;
+  const isolators = inputs.isolators;
+
+  if (!includeRot) {
+    const kTotal = isolators.reduce((acc, iso) => acc + iso.kvert, 0);
+    const cTotal = isolators.reduce((acc, iso) => acc + iso.cvert, 0);
+    const M = [
+      [inputs.mass, 0],
+      [0, inputs.platformMass]
+    ];
+    const C = [
+      [inputs.cPrimary + cTotal, -cTotal],
+      [-cTotal, cTotal + inputs.cPrimaryIso]
+    ];
+    const K = [
+      [inputs.kPrimary + kTotal, -kTotal],
+      [-kTotal, kTotal + inputs.kPrimaryIso]
+    ];
+    const force = [0, 0];
+    if (inputs.forceDof === 'c_fz') force[0] = 1;
+    if (inputs.forceDof === 'p_fz') force[1] = 1;
+    const labels = ['Component z', 'Platform z'];
+    return { M, C, K, force, labels, mode, submode: 'vertical' };
+  }
+
+  const dims = 6; // 3 translational + 3 rotational per body
+  const size = dims * 2;
+  const offset = dims;
+  const M = Array.from({ length: size }, () => new Array(size).fill(0));
+  const C = Array.from({ length: size }, () => new Array(size).fill(0));
+  const K = Array.from({ length: size }, () => new Array(size).fill(0));
+
+  for (let i = 0; i < 3; i++) {
+    M[i][i] = inputs.mass;
+    M[offset + i][offset + i] = inputs.platformMass;
+  }
+  M[3][3] = inputs.ixx;
+  M[4][4] = inputs.iyy;
+  M[5][5] = inputs.izz;
+  M[offset + 3][offset + 3] = inputs.platformIxx;
+  M[offset + 4][offset + 4] = inputs.platformIyy;
+  M[offset + 5][offset + 5] = inputs.platformIzz;
+
+  const makeB = (x, y, z) => ([
+    [1, 0, 0, 0, z, -y],
+    [0, 1, 0, -z, 0, x],
+    [0, 0, 1, y, -x, 0]
+  ]);
+
+  isolators.forEach(item => {
+    const { x, y, z, kshear, kvert, cshear, cvert } = item;
+    const Bc = makeB(x, y, z);
+    const Bp = makeB(x, y, z);
+    const kDiag = [kshear, kshear, kvert];
+    const cDiag = [cshear, cshear, cvert];
+
+    for (let row = 0; row < dims; row++) {
+      for (let col = 0; col < dims; col++) {
+        let kSum = 0;
+        let cSum = 0;
+        for (let axis = 0; axis < 3; axis++) {
+          kSum += Bc[axis][row] * kDiag[axis] * Bc[axis][col];
+          cSum += Bc[axis][row] * cDiag[axis] * Bc[axis][col];
+        }
+        K[row][col] += kSum;
+        C[row][col] += cSum;
+      }
+    }
+
+    for (let row = 0; row < dims; row++) {
+      for (let col = 0; col < dims; col++) {
+        let kSum = 0;
+        let cSum = 0;
+        for (let axis = 0; axis < 3; axis++) {
+          kSum += Bp[axis][row] * kDiag[axis] * Bp[axis][col];
+          cSum += Bp[axis][row] * cDiag[axis] * Bp[axis][col];
+        }
+        K[offset + row][offset + col] += kSum;
+        C[offset + row][offset + col] += cSum;
+      }
+    }
+
+    for (let row = 0; row < dims; row++) {
+      for (let col = 0; col < dims; col++) {
+        let kSum = 0;
+        let cSum = 0;
+        for (let axis = 0; axis < 3; axis++) {
+          kSum += Bc[axis][row] * kDiag[axis] * Bp[axis][col];
+          cSum += Bc[axis][row] * cDiag[axis] * Bp[axis][col];
+        }
+        K[row][offset + col] -= kSum;
+        K[offset + col][row] -= kSum;
+        C[row][offset + col] -= cSum;
+        C[offset + col][row] -= cSum;
+      }
+    }
+  });
+
+  // Add primary connections to ground (vertical only)
+  K[2][2] += inputs.kPrimary;
+  C[2][2] += inputs.cPrimary;
+  K[offset + 2][offset + 2] += inputs.kPrimaryIso;
+  C[offset + 2][offset + 2] += inputs.cPrimaryIso;
+
+  const labels = [
+    'Component ux', 'Component uy', 'Component uz',
+    'Component θx', 'Component θy', 'Component θz',
+    'Platform ux', 'Platform uy', 'Platform uz',
+    'Platform θx', 'Platform θy', 'Platform θz'
+  ];
+
+  const force = new Array(size).fill(0);
+  const map = {
+    c_fx: 0,
+    c_fy: 1,
+    c_fz: 2,
+    c_mx: 3,
+    c_my: 4,
+    c_mz: 5,
+    p_fx: offset + 0,
+    p_fy: offset + 1,
+    p_fz: offset + 2,
+    p_mx: offset + 3,
+    p_my: offset + 4,
+    p_mz: offset + 5
+  };
+  const idx = map[inputs.forceDof];
+  if (idx != null) force[idx] = 1;
+
+  return { M, C, K, force, labels, mode, submode: 'full' };
+}
+
+function computeFRF(freqs, system) {
+  if (system.mode === 'sdof') {
+    const m = system.M[0][0];
+    const c = system.C[0][0];
+    const k = system.K[0][0];
+    const mags = freqs.map(f => {
+      const w = 2 * Math.PI * f;
+      const real = k - m * w * w;
+      const imag = c * w;
+      return 1 / Math.hypot(real, imag);
+    });
+    return [mags];
+  }
+
+  const { M, C, K, force } = system;
+  const n = M.length;
+  const magnitudes = Array.from({ length: n }, () => new Array(freqs.length).fill(0));
+  for (let fi = 0; fi < freqs.length; fi++) {
+    const w = 2 * Math.PI * freqs[fi];
+    const real = Array.from({ length: n }, () => new Array(n).fill(0));
+    const imag = Array.from({ length: n }, () => new Array(n).fill(0));
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        real[i][j] = K[i][j] - w * w * M[i][j];
+        imag[i][j] = w * C[i][j];
+      }
+    }
+    const response = solveComplexSystem(real, imag, force);
+    if (!response) {
+      for (let i = 0; i < n; i++) magnitudes[i][fi] = NaN;
+      continue;
+    }
+    for (let i = 0; i < n; i++) {
+      const { re, im } = response[i];
+      magnitudes[i][fi] = Math.hypot(re, im);
+    }
+  }
+  return magnitudes;
+}
+
+function computeNaturalFrequencies(system) {
+  const { M, K } = system;
+  const n = M.length;
+  const invSqrt = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const m = M[i][i];
+    if (!Number.isFinite(m) || m <= 0) return [];
+    invSqrt[i] = 1 / Math.sqrt(m);
+  }
+  const A = Array.from({ length: n }, () => new Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      A[i][j] = invSqrt[i] * K[i][j] * invSqrt[j];
+    }
+  }
+  const eig = jacobiEigenvaluesSymmetric(A).filter(v => v > 1e-9).sort((a, b) => a - b);
+  return eig.map(lambda => Math.sqrt(lambda) / (2 * Math.PI));
+}
+
+function makeTrace(freqs, mags, label) {
+  return {
+    x: freqs,
+    y: mags,
+    mode: 'lines',
+    name: label,
+    hovertemplate: 'f=%{x:.2f} Hz<br>|q|=%{y:.4e}<extra></extra>'
+  };
+}
+
+function updateDerived(system) {
+  const panel = document.getElementById('derived');
+  const freqs = computeNaturalFrequencies(system);
+  if (!freqs.length) {
+    panel.innerHTML = '<div>Natural frequencies unavailable (check mass/stiffness)</div>';
+    return;
+  }
+  let html = '';
+  for (let i = 0; i < Math.min(freqs.length, 6); i++) {
+    html += `<div>Mode ${i + 1}: f ≈ ${freqs[i].toFixed(3)} Hz</div>`;
+  }
+  panel.innerHTML = html;
+}
+
+function validateInputs(inputs) {
+  if (!Number.isFinite(inputs.mass) || inputs.mass <= 0) return false;
+  if (inputs.mode === 'sdof') {
+    if (!Number.isFinite(inputs.kPrimary) || inputs.kPrimary <= 0) return false;
+    if (!Number.isFinite(inputs.cPrimary) || inputs.cPrimary < 0) return false;
+    return true;
+  }
+  if (!Number.isFinite(inputs.ixx) || inputs.ixx < 0) return false;
+  if (!Number.isFinite(inputs.iyy) || inputs.iyy < 0) return false;
+  if (!Number.isFinite(inputs.izz) || inputs.izz < 0) return false;
+  if (!Number.isFinite(inputs.kPrimaryIso) || inputs.kPrimaryIso < 0) return false;
+  if (!Number.isFinite(inputs.cPrimaryIso) || inputs.cPrimaryIso < 0) return false;
+  if (!Number.isFinite(inputs.kPrimary) || inputs.kPrimary < 0) return false;
+  if (!Number.isFinite(inputs.cPrimary) || inputs.cPrimary < 0) return false;
+  if (!Number.isFinite(inputs.platformMass) || inputs.platformMass <= 0) return false;
+  if (inputs.rocking) {
+    if (!Number.isFinite(inputs.platformIxx) || inputs.platformIxx < 0) return false;
+    if (!Number.isFinite(inputs.platformIyy) || inputs.platformIyy < 0) return false;
+    if (!Number.isFinite(inputs.platformIzz) || inputs.platformIzz < 0) return false;
+  }
+  if (!Array.isArray(inputs.isolators) || inputs.isolators.length < 1) return false;
+  return inputs.isolators.every(item => {
+    return [item.x, item.y, item.z, item.kshear, item.kvert, item.cshear, item.cvert]
+      .every(val => Number.isFinite(val));
+  });
+}
+
+function readInputs() {
+  const mode = document.getElementById('mode').value;
+  const mass = parseFloat(document.getElementById('mass').value);
+  if (mode === 'sdof') {
+    return {
+      mode,
+      mass,
+      kPrimary: parseFloat(document.getElementById('k_primary').value),
+      cPrimary: parseFloat(document.getElementById('c_primary').value),
+      forceDof: document.getElementById('force-dof').value || 'c_fz'
+    };
+  }
+  return {
+    mode,
+    mass,
+    ixx: parseFloat(document.getElementById('ixx').value),
+    iyy: parseFloat(document.getElementById('iyy').value),
+    izz: parseFloat(document.getElementById('izz').value),
+    rocking: document.getElementById('rocking').checked,
+    isolators: collectIsolators(),
+    kPrimaryIso: parseFloat(document.getElementById('k_primary_iso').value),
+    cPrimaryIso: parseFloat(document.getElementById('c_primary_iso').value),
+    kPrimary: parseFloat(document.getElementById('k_primary').value),
+    cPrimary: parseFloat(document.getElementById('c_primary').value),
+    platformMass: parseFloat(document.getElementById('platform-mass').value),
+    platformIxx: parseFloat(document.getElementById('p-ixx').value),
+    platformIyy: parseFloat(document.getElementById('p-iyy').value),
+    platformIzz: parseFloat(document.getElementById('p-izz').value),
+    forceDof: document.getElementById('force-dof').value
+  };
+}
+
+function readFrequencySettings() {
+  return {
+    fmin: parseFloat(document.getElementById('fmin').value),
+    fmax: parseFloat(document.getElementById('fmax').value),
+    npts: parseInt(document.getElementById('npts').value, 10)
+  };
+}
+
+function draw(system, freqs, magnitudes, labels) {
+  const traces = magnitudes.map((mag, idx) => makeTrace(freqs, mag, labels[idx]));
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 70, r: 20, t: 30, b: 60 },
+    xaxis: { title: 'Frequency [Hz]', rangemode: 'tozero' },
+    yaxis: { title: 'Amplitude [unit per unit]', type: 'linear' },
+    legend: { orientation: 'h', y: -0.2 }
+  };
+  const config = { responsive: true, displayModeBar: true };
+  Plotly.newPlot('plot', traces, layout, config);
+  updateDerived(system);
+}
+
+function handleModeToggle() {
+  const mode = document.getElementById('mode').value;
+  const rocking = document.getElementById('rocking').checked;
+  document.getElementById('sdof-only').style.display = mode === 'sdof' ? 'block' : 'none';
+  document.getElementById('isolated-only').style.display = mode === 'isolated' ? 'block' : 'none';
+  document.getElementById('platform-inertia').style.display = (mode === 'isolated' && rocking) ? 'flex' : 'none';
+  updateForceOptions(mode, rocking);
+}
+
+function applySquareLayout() {
+  const count = parseInt(document.getElementById('iso-count').value, 10) || 4;
+  const preserved = collectIsolators();
+  let positions = [];
+  if (count === 1) {
+    positions = [{ x: 0, y: 0 }];
+  } else if (count === 4) {
+    positions = [
+      { x: 0.35, y: 0.25 },
+      { x: -0.35, y: 0.25 },
+      { x: -0.35, y: -0.25 },
+      { x: 0.35, y: -0.25 }
+    ];
+  } else {
+    const radius = 0.4;
+    for (let i = 0; i < count; i++) {
+      const angle = (2 * Math.PI * i) / count;
+      positions.push({ x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
+    }
+  }
+  const iso = makeIsolatorDefaults(count, preserved);
+  iso.forEach((item, idx) => {
+    if (positions[idx]) {
+      item.x = Number(positions[idx].x.toFixed(3));
+      item.y = Number(positions[idx].y.toFixed(3));
+    }
+  });
+  buildIsolatorInputs(count, iso);
+}
+
+function applyLineLayout() {
+  const count = parseInt(document.getElementById('iso-count').value, 10) || 2;
+  const preserved = collectIsolators();
+  const spacing = 0.3;
+  const iso = makeIsolatorDefaults(count, preserved);
+  const start = -((count - 1) * spacing) / 2;
+  iso.forEach((item, idx) => {
+    item.x = Number((start + idx * spacing).toFixed(3));
+    item.y = 0;
+  });
+  buildIsolatorInputs(count, iso);
+}
+
+function resetDefaults() {
+  document.getElementById('mode').value = 'sdof';
+  document.getElementById('mass').value = 100;
+  document.getElementById('k_primary').value = 35000;
+  document.getElementById('c_primary').value = 600;
+  document.getElementById('ixx').value = 12;
+  document.getElementById('iyy').value = 18;
+  document.getElementById('izz').value = 20;
+  document.getElementById('rocking').checked = false;
+  document.getElementById('iso-count').value = 1;
+  document.getElementById('platform-mass').value = 40;
+  document.getElementById('p-ixx').value = 5;
+  document.getElementById('p-iyy').value = 7;
+  document.getElementById('p-izz').value = 8;
+  document.getElementById('k_primary_iso').value = 2000;
+  document.getElementById('c_primary_iso').value = 50;
+  document.getElementById('fmin').value = 0.5;
+  document.getElementById('fmax').value = 60;
+  document.getElementById('npts').value = 1200;
+  buildIsolatorInputs(1);
+  applySquareLayout();
+  handleModeToggle();
+  document.getElementById('force-dof').value = 'c_fz';
+}
+
+function init() {
+  buildIsolatorInputs(1);
+  applySquareLayout();
+  handleModeToggle();
+  const freqSettings = readFrequencySettings();
+  const inputs = readInputs();
+  const system = systemFromInputs(inputs);
+  const freqs = arange(freqSettings.fmin, freqSettings.fmax, freqSettings.npts);
+  const mags = computeFRF(freqs, system);
+  draw(system, freqs, mags, system.labels);
+
+  document.getElementById('mode').addEventListener('change', () => {
+    handleModeToggle();
+  });
+  document.getElementById('rocking').addEventListener('change', () => {
+    handleModeToggle();
+  });
+  document.getElementById('iso-count').addEventListener('change', () => {
+    let count = parseInt(document.getElementById('iso-count').value, 10) || 1;
+    count = Math.min(Math.max(count, 1), 8);
+    document.getElementById('iso-count').value = count;
+    buildIsolatorInputs(count, collectIsolators());
+  });
+  document.getElementById('layout-square').addEventListener('click', applySquareLayout);
+  document.getElementById('layout-line').addEventListener('click', applyLineLayout);
+  document.getElementById('update').addEventListener('click', () => {
+    const freq = readFrequencySettings();
+    const inputs = readInputs();
+    if (!validateInputs(inputs) || !Number.isFinite(freq.fmin) || !Number.isFinite(freq.fmax)) return;
+    if (freq.fmax <= freq.fmin || freq.npts < 10) return;
+    const system = systemFromInputs(inputs);
+    const freqs = arange(freq.fmin, freq.fmax, freq.npts);
+    const mags = computeFRF(freqs, system);
+    draw(system, freqs, mags, system.labels);
+  });
+  document.getElementById('reset').addEventListener('click', () => {
+    resetDefaults();
+    const freqSettings = readFrequencySettings();
+    const inputs = readInputs();
+    const system = systemFromInputs(inputs);
+    const freqs = arange(freqSettings.fmin, freqSettings.fmax, freqSettings.npts);
+    const mags = computeFRF(freqs, system);
+    draw(system, freqs, mags, system.labels);
+  });
+}
+
+window.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
