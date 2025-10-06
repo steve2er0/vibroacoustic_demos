@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Beam Modes & Mobility Explorer</title>
+<script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+<style>
+  :root { --bg:#060b1a; --card:#121a32; --ink:#f2f6ff; --muted:#9ea9c9; --accent:#5ea4ff; --accent2:#f58f5d; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { max-width:1300px; margin:24px auto 48px; padding:0 22px; }
+  .title { font-size:30px; font-weight:700; margin-bottom:8px; }
+  .subtitle { color:var(--muted); margin-bottom:26px; max-width:920px; line-height:1.5; }
+  .grid { display:grid; grid-template-columns:360px 1fr; gap:18px; align-items:start; }
+  .panel { background:var(--card); border-radius:18px; padding:20px; box-shadow:0 10px 30px rgba(0,0,0,.28); }
+  .panel h2 { font-size:16px; margin:0 0 14px 0; color:var(--accent); letter-spacing:.3px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:11px 0; }
+  .row label { flex:1; color:var(--muted); font-size:14px; }
+  .row input[type="number"], .row select { width:150px; padding:8px; border-radius:10px; border:1px solid #27324f; background:#0d1327; color:var(--ink); }
+  .row input[type="range"] { flex:1; }
+  .inline { display:flex; align-items:center; gap:10px; }
+  .btn { background:var(--accent); color:#071224; border:none; padding:10px 14px; border-radius:10px; font-weight:700; cursor:pointer; }
+  .btn.alt { background:#8bd6ff; color:#071224; }
+  .btn:active { transform:translateY(1px); }
+  .nums { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-top:14px; }
+  .nums div { background:#0d1327; border:1px solid #27324f; border-radius:12px; padding:10px; font-size:12px; }
+  .plots { display:grid; grid-template-rows:340px 320px; gap:18px; }
+  .plot-title { font-size:14px; color:var(--muted); margin-bottom:6px; font-weight:600; letter-spacing:.2px; }
+  .toggle { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--muted); }
+  @media(max-width:1100px){
+    .grid { grid-template-columns:1fr; }
+    .plots { grid-template-rows: minmax(320px,1fr) minmax(320px,1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">Beam Modes & Mobility Explorer</div>
+  <div class="subtitle">
+    Straight beam modes look like standing waves, yet bending waves are racing back and forth beneath that pattern. Adjust the beam geometry, material, boundary conditions, and drive location to watch how mode shapes and drive-point mobility evolve. The first ten bending resonances are shown; higher modes exist but are not plotted here.
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Beam Parameters</h2>
+      <div class="row">
+        <label for="length">Length L [m]</label>
+        <input id="length" type="number" min="0.1" step="0.01" value="1.0" />
+      </div>
+      <div class="row">
+        <label for="width">Width b [m]</label>
+        <input id="width" type="number" min="0.005" step="0.001" value="0.05" />
+      </div>
+      <div class="row">
+        <label for="thickness">Thickness h [m]</label>
+        <input id="thickness" type="number" min="0.001" step="0.001" value="0.01" />
+      </div>
+      <div class="row">
+        <label for="material">Material</label>
+        <select id="material">
+          <option value="aluminum" selected>Aluminum 6061-T6 (70 GPa, 2700 kg/m³)</option>
+          <option value="steel">Steel (A36) (200 GPa, 7850 kg/m³)</option>
+          <option value="titanium">Titanium (Grade 5) (110 GPa, 4500 kg/m³)</option>
+          <option value="magnesium">Magnesium AZ31B (45 GPa, 1800 kg/m³)</option>
+          <option value="carbon">Carbon fiber (unidir.) (135 GPa, 1600 kg/m³)</option>
+          <option value="wood">Spruce (11 GPa, 450 kg/m³)</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="damping">Loss factor (ζ, %)</label>
+        <input id="damping" type="number" min="0.05" step="0.05" value="1.0" />
+      </div>
+      <div class="row">
+        <label for="boundary">Boundary condition</label>
+        <select id="boundary">
+          <option value="cantilever">Clamped-Free (cantilever)</option>
+          <option value="clamped_clamped">Clamped-Clamped</option>
+          <option value="simply_supported">Simply-Supported</option>
+          <option value="clamped_pinned">Clamped-Simply Supported</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="mode-index">Active mode</label>
+        <input id="mode-index" type="number" min="1" max="10" step="1" value="1" />
+      </div>
+      <div class="row toggle">
+        <input type="checkbox" id="animate" checked />
+        <label for="animate" style="margin:0;">Animate selected mode</label>
+      </div>
+      <div class="row" style="margin-top:18px;">
+        <button id="update" class="btn">Update</button>
+        <button id="reset" class="btn alt">Reset</button>
+      </div>
+
+      <h2>Drive Location</h2>
+      <div class="row">
+        <label for="drive">Normalized position (0 = left clamp)</label>
+        <input id="drive" type="range" min="0" max="1" step="0.001" value="0.2" />
+      </div>
+
+      <h2>Derived</h2>
+      <div class="nums" id="derived"></div>
+    </div>
+
+    <div class="panel">
+      <div class="plots">
+        <div>
+          <div class="plot-title">Mode shapes (stacked, first ten) – click to move the drive point</div>
+          <div id="modes-plot" style="height:100%;"></div>
+        </div>
+        <div>
+          <div class="plot-title">Drive-point mobility magnitude |Y(jω)|</div>
+          <div id="mobility-plot" style="height:100%;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const MATERIALS = {
+  aluminum: { label: 'Aluminum 6061-T6', young: 70e9, density: 2700 },
+  steel: { label: 'Steel (A36)', young: 200e9, density: 7850 },
+  titanium: { label: 'Titanium Grade 5', young: 110e9, density: 4500 },
+  magnesium: { label: 'Magnesium AZ31B', young: 45e9, density: 1800 },
+  carbon: { label: 'Carbon fiber (unidir.)', young: 135e9, density: 1600 },
+  wood: { label: 'Spruce', young: 11e9, density: 450 }
+};
+
+const BOUNDARY_DATA = {
+  cantilever: {
+    label: 'Clamped-Free (cantilever)',
+    lambdaL: [
+      1.87510407, 4.69409113, 7.85475744, 10.99554073, 14.13716839,
+      17.27875953, 20.42035225, 23.56194490, 26.70353756, 29.84513021
+    ],
+    shape: (lambdaL) => {
+      const coshL = Math.cosh(lambdaL);
+      const sinhL = Math.sinh(lambdaL);
+      const cosL = Math.cos(lambdaL);
+      const sinL = Math.sin(lambdaL);
+      const alpha = (coshL + cosL) / (sinhL + sinL);
+      return s => {
+        const u = lambdaL * s;
+        return Math.cosh(u) - Math.cos(u) - alpha * (Math.sinh(u) - Math.sin(u));
+      };
+    }
+  },
+  clamped_clamped: {
+    label: 'Clamped-Clamped',
+    lambdaL: [
+      4.73004074, 7.85320462, 10.99560784, 14.13716549, 17.27875953,
+      20.42035225, 23.56194490, 26.70353756, 29.84513021, 32.98672286
+    ],
+    shape: (lambdaL) => {
+      const coshL = Math.cosh(lambdaL);
+      const sinhL = Math.sinh(lambdaL);
+      const cosL = Math.cos(lambdaL);
+      const sinL = Math.sin(lambdaL);
+      const alpha = (coshL - cosL) / (sinhL - sinL);
+      return s => {
+        const u = lambdaL * s;
+        return Math.cosh(u) - Math.cos(u) - alpha * (Math.sinh(u) - Math.sin(u));
+      };
+    }
+  },
+  simply_supported: {
+    label: 'Simply-Supported',
+    lambdaL: Array.from({ length: 10 }, (_, i) => (i + 1) * Math.PI),
+    shape: (lambdaL) => {
+      return s => Math.sin(lambdaL * s);
+    }
+  },
+  clamped_pinned: {
+    label: 'Clamped-Simply Supported',
+    lambdaL: [
+      3.926602, 7.068583, 10.210176, 13.351768, 16.493361,
+      19.634953, 22.776546, 25.918138, 29.059731, 32.201323
+    ],
+    shape: (lambdaL) => {
+      const coshL = Math.cosh(lambdaL);
+      const sinhL = Math.sinh(lambdaL);
+      const cosL = Math.cos(lambdaL);
+      const sinL = Math.sin(lambdaL);
+      const alpha = (coshL - cosL) / (sinhL - sinL);
+      return s => {
+        const u = lambdaL * s;
+        return Math.cosh(u) - Math.cos(u) - alpha * (Math.sinh(u) - Math.sin(u));
+      };
+    }
+  }
+};
+
+const SAMPLES = 220;
+const MOBILITY_POINTS = 650;
+const COLORS = {
+  static: 'rgba(150,168,210,0.4)',
+  active: '#5ea4ff',
+  mobility: '#f2f6ff',
+  infinite: '#8bd6ff',
+  peaks: '#f58f5d'
+};
+
+const state = {
+  params: null,
+  modes: [],
+  drive: 0.2,
+  activeMode: 1,
+  animate: true,
+  animationHandle: null,
+  phase: 0,
+  listenerAttached: false
+};
+
+function readInputs() {
+  const length = parseFloat(document.getElementById('length').value);
+  const width = parseFloat(document.getElementById('width').value);
+  const thickness = parseFloat(document.getElementById('thickness').value);
+  const materialKey = document.getElementById('material').value;
+  const material = MATERIALS[materialKey] || MATERIALS.aluminum;
+  const damping = parseFloat(document.getElementById('damping').value) / 100;
+  const boundary = document.getElementById('boundary').value;
+  const activeMode = Math.min(10, Math.max(1, parseInt(document.getElementById('mode-index').value, 10) || 1));
+  const drive = parseFloat(document.getElementById('drive').value);
+  const animate = document.getElementById('animate').checked;
+  return {
+    length: Math.max(length, 0.05),
+    width: Math.max(width, 1e-3),
+    thickness: Math.max(thickness, 5e-4),
+    young: material.young,
+    density: material.density,
+    damping: Math.max(damping, 0.0001),
+    boundary,
+    activeMode,
+    drive: Math.min(Math.max(drive, 0), 1),
+    animate,
+    materialKey
+  };
+}
+
+function trapz(xs, ys) {
+  let sum = 0;
+  for (let i = 1; i < xs.length; i++) {
+    const dx = xs[i] - xs[i - 1];
+    sum += 0.5 * dx * (ys[i] + ys[i - 1]);
+  }
+  return sum;
+}
+
+function computeModes(params) {
+  const bc = BOUNDARY_DATA[params.boundary];
+  const L = params.length;
+  const width = params.width;
+  const thickness = params.thickness;
+  const area = width * thickness;
+  const inertia = (width * Math.pow(thickness, 3)) / 12;
+  const mu = params.density * area; // mass per unit length
+  const stiffness = params.young * inertia;
+
+  const sVals = Array.from({ length: SAMPLES }, (_, i) => i / (SAMPLES - 1));
+
+  const modes = bc.lambdaL.map((lambdaL, idx) => {
+    const shapeFunc = bc.shape(lambdaL);
+    const raw = sVals.map(shapeFunc);
+    const integral = trapz(sVals, raw.map(v => v * v));
+    const normFactor = 1 / Math.sqrt(mu * L * integral);
+    const massNorm = raw.map(v => v * normFactor);
+    const maxAbs = Math.max(...massNorm.map(Math.abs)) || 1;
+    const display = massNorm.map(v => v / maxAbs);
+    const beta = lambdaL / L;
+    const omega = beta * beta * Math.sqrt(stiffness / mu);
+    const freq = omega / (2 * Math.PI);
+    return {
+      index: idx + 1,
+      lambdaL,
+      s: sVals,
+      massNorm,
+      display,
+      beta,
+      omega,
+      freq,
+      raw,
+      normFactor
+    };
+  });
+
+  return {
+    modes,
+    area,
+    inertia,
+    mu,
+    stiffness
+  };
+}
+
+function evaluateModeAt(mode, s) {
+  const sVals = mode.s;
+  if (s <= sVals[0]) return mode.massNorm[0];
+  if (s >= sVals[sVals.length - 1]) return mode.massNorm[sVals.length - 1];
+  let idx = Math.floor(s * (SAMPLES - 1));
+  idx = Math.max(0, Math.min(SAMPLES - 2, idx));
+  const t = (s - sVals[idx]) / (sVals[idx + 1] - sVals[idx]);
+  return mode.massNorm[idx] * (1 - t) + mode.massNorm[idx + 1] * t;
+}
+
+function computeMobility(modes, params, drive, beamProps) {
+  const freqs = modes.map(m => m.freq);
+  const fMin = Math.max(1, Math.min(...freqs) * 0.4);
+  const fMax = Math.max(...freqs) * 1.25;
+  const freqAxis = Array.from({ length: MOBILITY_POINTS }, (_, i) => {
+    const t = i / (MOBILITY_POINTS - 1);
+    return fMin * Math.pow(fMax / fMin, t);
+  });
+
+  const zeta = params.damping;
+  const driveS = drive;
+  const mobilityMag = new Array(freqAxis.length).fill(0);
+  const phiDrive = modes.map(mode => evaluateModeAt(mode, driveS));
+
+  for (let i = 0; i < freqAxis.length; i++) {
+    const omega = 2 * Math.PI * freqAxis[i];
+    let real = 0;
+    let imag = 0;
+    for (let m = 0; m < modes.length; m++) {
+      const mode = modes[m];
+      const phi = phiDrive[m];
+      const num = phi * phi * omega;
+      const denomReal = mode.omega * mode.omega - omega * omega;
+      const denomImag = 2 * zeta * mode.omega * omega;
+      const denomMagSq = denomReal * denomReal + denomImag * denomImag;
+      real += num * denomImag / denomMagSq;
+      imag += num * denomReal / denomMagSq;
+    }
+    mobilityMag[i] = Math.max(Math.sqrt(real * real + imag * imag), 1e-12);
+  }
+
+  const stiffness = beamProps.stiffness;
+  const mu = beamProps.mu;
+  const coeff = 1 / (2 * Math.sqrt(2) * Math.sqrt(stiffness * mu));
+  const infinite = freqAxis.map(f => {
+    const omega = 2 * Math.PI * Math.max(f, 1e-3);
+    return coeff / Math.sqrt(omega);
+  });
+
+  const peaks = modes.map((mode, idx) => {
+    const phi = phiDrive[idx];
+    const peak = Math.max(Math.abs(phi * phi) / (2 * zeta * mode.omega), 1e-12);
+    return { freq: mode.freq, value: peak };
+  });
+
+  return { freqAxis, mobilityMag, peaks, infinite };
+}
+
+function updateDerivedPanel(data, params) {
+  const container = document.getElementById('derived');
+  const first = data.modes[0];
+  const last = data.modes[data.modes.length - 1];
+  const beamMass = data.mu * params.length;
+  const mat = MATERIALS[params.materialKey] || { label: 'Custom', young: params.young, density: params.density };
+  container.innerHTML = `
+    <div>Material: ${mat.label}</div>
+    <div>E = ${formatNumber(mat.young / 1e9, 4)} GPa</div>
+    <div>ρ = ${formatNumber(mat.density, 4)} kg/m³</div>
+    <div>EI = ${formatNumber(data.stiffness, 3)} N·m²</div>
+    <div>μ = ${formatNumber(data.mu, 4)} kg/m</div>
+    <div>Total mass ≈ ${formatNumber(beamMass, 3)} kg</div>
+    <div>f₁ ≈ ${formatNumber(first.freq, 4)} Hz</div>
+    <div>f₁₀ ≈ ${formatNumber(last.freq, 4)} Hz</div>
+    <div>Drive @ x/L = ${formatNumber(params.drive, 3)}</div>
+  `;
+}
+
+function formatNumber(value, digits = 3) {
+  if (!Number.isFinite(value)) return '—';
+  const absVal = Math.abs(value);
+  if (absVal >= 1000 || absVal < 0.01) {
+    return value.toExponential(digits - 1);
+  }
+  return value.toFixed(digits);
+}
+
+function buildModesPlot(data) {
+  state.listenerAttached = false;
+  if (window.Plotly && document.getElementById('modes-plot')) {
+    Plotly.purge('modes-plot');
+  }
+  const offsets = data.modes.map((mode, idx) => idx * 1.6);
+  const staticTraces = data.modes.map((mode, idx) => ({
+    x: mode.s.map(s => state.params.length * s),
+    y: mode.display.map(v => v * 0.6 + offsets[idx]),
+    mode: 'lines',
+    line: { color: COLORS.static, width: 2 },
+    hoverinfo: 'skip',
+    showlegend: false
+  }));
+
+  const activeIdx = state.activeMode - 1;
+  const activeMode = data.modes[activeIdx];
+  const activeTrace = {
+    x: activeMode.s.map(s => state.params.length * s),
+    y: activeMode.display.map(v => v * 0.8 + offsets[activeIdx]),
+    mode: 'lines',
+    line: { color: COLORS.active, width: 4 },
+    name: `Mode ${activeMode.index}`,
+    hoverinfo: 'skip'
+  };
+
+  const driveX = state.drive * state.params.length;
+  const driveY = activeMode.display[Math.round(state.drive * (SAMPLES - 1))] * 0.8 + offsets[activeIdx];
+  const driveTrace = {
+    x: [driveX],
+    y: [driveY],
+    mode: 'markers',
+    marker: { color: '#000', size: 10, symbol: 'circle', line: { color: '#fff', width: 2 } },
+    name: 'Drive location',
+    hoverinfo: 'skip'
+  };
+
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 70, r: 20, t: 10, b: 40 },
+    xaxis: {
+      title: 'Position along beam [m]',
+      showgrid: true,
+      gridcolor: 'rgba(255,255,255,0.05)'
+    },
+    yaxis: {
+      showticklabels: false,
+      showgrid: false,
+      zeroline: false,
+      range: [-0.6, offsets[offsets.length - 1] + 1.2]
+    },
+    hovermode: 'closest'
+  };
+
+  Plotly.newPlot('modes-plot', [...staticTraces, activeTrace, driveTrace], layout, { responsive: true, displayModeBar: false });
+}
+
+function buildMobilityPlot(mobility, data) {
+  if (window.Plotly && document.getElementById('mobility-plot')) {
+    Plotly.purge('mobility-plot');
+  }
+  const traceMob = {
+    x: mobility.freqAxis,
+    y: mobility.mobilityMag,
+    mode: 'lines',
+    line: { color: COLORS.mobility, width: 2 },
+    name: 'Mobility'
+  };
+  const traceInfinite = {
+    x: mobility.freqAxis,
+    y: mobility.infinite,
+    mode: 'lines',
+    line: { color: COLORS.infinite, width: 2, dash: 'dash' },
+    name: 'Infinite beam |Y|'
+  };
+  const tracePeaks = {
+    x: mobility.peaks.map(p => p.freq),
+    y: mobility.peaks.map(p => p.value),
+    mode: 'markers',
+    marker: { color: COLORS.peaks, size: 8, symbol: 'triangle-up' },
+    name: 'Resonance upper ≈ φ²/(2ζωₙ)'
+  };
+
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 70, r: 20, t: 10, b: 50 },
+    xaxis: {
+      type: 'log',
+      title: 'Frequency [Hz]',
+      showgrid: true,
+      gridcolor: 'rgba(255,255,255,0.05)'
+    },
+    yaxis: {
+      type: 'log',
+      title: 'Mobility |Y| [m/(N·s)]',
+      showgrid: true,
+      gridcolor: 'rgba(255,255,255,0.05)'
+    },
+    legend: { orientation: 'h', y: -0.25, x: 0.05 }
+  };
+
+  Plotly.newPlot('mobility-plot', [traceMob, traceInfinite, tracePeaks], layout, { responsive: true, displayModeBar: false });
+}
+
+function updatePlots() {
+  const rawInputs = readInputs();
+  document.getElementById('mode-index').value = rawInputs.activeMode;
+  state.params = rawInputs;
+  state.drive = rawInputs.drive;
+  state.activeMode = rawInputs.activeMode;
+  state.animate = rawInputs.animate;
+
+  const data = computeModes(rawInputs);
+  state.modes = data.modes;
+  updateDerivedPanel(data, rawInputs);
+
+  const mobility = computeMobility(data.modes, rawInputs, rawInputs.drive, data);
+  buildModesPlot(data);
+  buildMobilityPlot(mobility, data);
+
+  setupInteractions();
+  startAnimation();
+}
+
+function setupInteractions() {
+  const modesPlot = document.getElementById('modes-plot');
+  if (!modesPlot || state.listenerAttached) return;
+  modesPlot.on('plotly_click', evt => {
+    if (!evt || !evt.points || !evt.points.length) return;
+    const x = evt.points[0].x;
+    const newDrive = Math.min(Math.max(x / state.params.length, 0), 1);
+    document.getElementById('drive').value = newDrive;
+    state.drive = newDrive;
+    updatePlots();
+  });
+  state.listenerAttached = true;
+}
+
+function startAnimation() {
+  if (state.animationHandle) {
+    cancelAnimationFrame(state.animationHandle);
+    state.animationHandle = null;
+  }
+  state.phase = 0;
+  if (!state.animate) {
+    const activeIdx = state.activeMode - 1;
+    if (activeIdx < 0 || activeIdx >= state.modes.length) return;
+    const offsets = state.modes.map((_, idx) => idx * 1.6);
+    const offset = offsets[activeIdx];
+    const baseY = state.modes[activeIdx].display.map(v => v * 0.8 + offset);
+    const driveX = state.drive * state.params.length;
+    const driveIdx = Math.round(state.drive * (SAMPLES - 1));
+    const driveY = state.modes[activeIdx].display[driveIdx] * 0.8 + offset;
+    if (document.getElementById('modes-plot')) {
+      Plotly.restyle('modes-plot', { y: [baseY] }, state.modes.length);
+      Plotly.restyle('modes-plot', { x: [[driveX]], y: [[driveY]] }, state.modes.length + 1);
+    }
+    return;
+  }
+
+  const modesPlot = document.getElementById('modes-plot');
+  if (!modesPlot || !modesPlot.data || !state.modes.length) return;
+
+  const offsets = state.modes.map((_, idx) => idx * 1.6);
+  const activeIdx = state.activeMode - 1;
+  const activeMode = state.modes[activeIdx];
+  const baseX = activeMode.s.map(s => state.params.length * s);
+  const baseY = activeMode.display;
+
+  const animateStep = (timestamp) => {
+    state.phase += 0.05;
+    const amp = 0.8 * Math.sin(state.phase);
+    const offset = offsets[activeIdx];
+    const y = baseY.map(v => v * amp + offset);
+    const driveIdx = Math.round(state.drive * (SAMPLES - 1));
+    const driveY = baseY[driveIdx] * amp + offset;
+    const driveX = state.drive * state.params.length;
+
+    Plotly.restyle('modes-plot', {
+      y: [y]
+    }, state.modes.length); // active trace index
+
+    Plotly.restyle('modes-plot', {
+      x: [[driveX]],
+      y: [[driveY]]
+    }, state.modes.length + 1);
+
+    if (state.animate) {
+      state.animationHandle = requestAnimationFrame(animateStep);
+    }
+  };
+
+  state.animationHandle = requestAnimationFrame(animateStep);
+}
+
+function resetDefaults() {
+  document.getElementById('length').value = 1.0;
+  document.getElementById('width').value = 0.05;
+  document.getElementById('thickness').value = 0.01;
+  document.getElementById('material').value = 'aluminum';
+  document.getElementById('damping').value = 1.0;
+  document.getElementById('boundary').value = 'cantilever';
+  document.getElementById('mode-index').value = 1;
+  document.getElementById('drive').value = 0.2;
+  document.getElementById('animate').checked = true;
+  updatePlots();
+}
+
+['length','width','thickness','material','damping','boundary','mode-index','animate'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    updatePlots();
+  });
+});
+
+document.getElementById('drive').addEventListener('input', () => {
+  updatePlots();
+});
+
+document.getElementById('mode-index').addEventListener('input', () => {
+  updatePlots();
+});
+
+document.getElementById('update').addEventListener('click', updatePlots);
+document.getElementById('reset').addEventListener('click', resetDefaults);
+
+window.addEventListener('DOMContentLoaded', () => {
+  updatePlots();
+});
+</script>
+</body>
+</html>
