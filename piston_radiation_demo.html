@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Baffled Piston Radiation Explorer</title>
+<script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+<style>
+  :root { --bg:#080d1c; --card:#121a2f; --ink:#f2f6ff; --muted:#9aa9cf; --accent:#5ea4ff; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { max-width:1250px; margin:24px auto 48px; padding:0 20px; }
+  .title { font-size:30px; font-weight:700; margin-bottom:10px; }
+  .subtitle { color:var(--muted); margin-bottom:26px; max-width:880px; }
+  .grid { display:grid; grid-template-columns:360px 1fr; gap:18px; align-items:start; }
+  .panel { background:var(--card); border-radius:18px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.28); }
+  .panel h2 { font-size:16px; margin:0 0 14px 0; color:var(--accent); letter-spacing:.3px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:11px 0; }
+  .row label { flex:1; color:var(--muted); font-size:14px; }
+  .row input[type="number"], .row select { width:150px; padding:8px; border-radius:10px; border:1px solid #2a3350; background:#0f162f; color:var(--ink); }
+  .row input[type="range"] { flex:1; }
+  .btn { background:var(--accent); color:#081224; border:none; padding:10px 14px; border-radius:10px; font-weight:700; cursor:pointer; }
+  .btn.alt { background:#8bd6ff; color:#081224; }
+  .btn:active { transform:translateY(1px); }
+  .nums { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-top:12px; }
+  .nums div { background:#0f162f; border:1px solid #283456; border-radius:12px; padding:10px; font-size:12px; }
+  .plots { display:grid; grid-template-columns:2fr 1fr; gap:14px; }
+  .polar-stack { display:grid; grid-template-rows:1fr 1fr; gap:16px; height:640px; }
+  @media (max-width:1100px) {
+    .grid { grid-template-columns:1fr; }
+    .plots { grid-template-columns:1fr; }
+    .polar-stack { height:auto; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">Baffled Piston Radiation Explorer</div>
+  <div class="subtitle">Visualise radiated power, radiation efficiency and far-field patterns for a baffled circular piston in free space. Adjust the inputs to watch how acoustic pressure and intensity evolve with frequency.</div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Inputs</h2>
+      <div class="row">
+        <label for="radius">Piston radius a [m]</label>
+        <input id="radius" type="number" min="0.001" step="0.001" value="0.1" />
+      </div>
+      <div class="row">
+        <label for="medium">Medium</label>
+        <select id="medium">
+          <option value="air" selected>Air (20 °C)</option>
+          <option value="water">Water (fresh, 20 °C)</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="fmin">f<sub>min</sub> [Hz]</label>
+        <input id="fmin" type="number" min="1" step="1" value="10" />
+      </div>
+      <div class="row">
+        <label for="fmax">f<sub>max</sub> [Hz]</label>
+        <input id="fmax" type="number" min="10" step="10" value="5000" />
+      </div>
+      <div class="row">
+        <label for="npts"># samples</label>
+        <input id="npts" type="number" min="50" step="50" value="400" />
+      </div>
+      <div class="row">
+        <label for="freq">Frequency f [Hz]</label>
+        <input id="freq" type="number" min="1" step="1" value="1000" />
+      </div>
+      <div class="row" style="margin-top:18px;">
+        <button id="update" class="btn">Update plots</button>
+        <button id="reset" class="btn alt">Reset</button>
+      </div>
+      <div class="nums" id="derived"></div>
+    </div>
+
+    <div class="panel">
+      <div class="plots">
+        <div id="power-plot" style="height:640px;"></div>
+        <div class="polar-stack">
+          <div id="intensity-polar"></div>
+          <div id="pressure-polar"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function besselJ0(x) {
+  const ax = Math.abs(x);
+  if (ax < 8.0) {
+    const y = x * x;
+    const num = 57568490574.0 + y * (-13362590354.0 + y * (651619640.7 + y * (-11214424.18 + y * (77392.33017 + y * (-184.9052456)))));
+    const den = 57568490411.0 + y * (1029532985.0 + y * (9494680.718 + y * (59272.64853 + y * (267.8532712 + y * 1.0))));
+    return num / den;
+  }
+  const z = 8.0 / ax;
+  const y = z * z;
+  const xx = ax - 0.7853981633974483;
+  const ans1 = 1.0 + y * (-0.1098628627e-2 + y * (0.2734510407e-4 + y * (-0.2073370639e-5 + y * 0.2093887211e-6)));
+  const ans2 = -0.1562499995e-1 + y * (0.1430488765e-3 + y * (-0.6911147651e-5 + y * (0.7621095161e-6 - y * 0.934935152e-7)));
+  return Math.sqrt(0.636619772 / ax) * (Math.cos(xx) * ans1 - z * Math.sin(xx) * ans2);
+}
+
+function besselJ1(x) {
+  const ax = Math.abs(x);
+  if (ax < 8.0) {
+    const y = x * x;
+    const num = x * (72362614232.0 + y * (-7895059235.0 + y * (242396853.1 + y * (-2972611.439 + y * (15704.48260 + y * (-30.16036606))))));
+    const den = 144725228442.0 + y * (2300535178.0 + y * (18583304.74 + y * (99447.43394 + y * (376.9991397 + y * 1.0))));
+    return num / den;
+  }
+  const z = 8.0 / ax;
+  const y = z * z;
+  const xx = ax - 2.356194490192345;
+  const ans1 = 1.0 + y * (0.183105e-2 + y * (-0.3516396496e-4 + y * (0.2457520174e-5 + y * (-0.240337019e-6))));
+  const ans2 = 0.04687499995 + y * (-0.2002690873e-3 + y * (0.8449199096e-5 + y * (-0.88228987e-6 + y * 0.105787412e-6)));
+  const res = Math.sqrt(0.636619772 / ax) * (Math.cos(xx) * ans1 - z * Math.sin(xx) * ans2);
+  return x < 0 ? -res : res;
+}
+
+function directivity(ka, theta) {
+  const s = Math.sin(theta);
+  const x = ka * s;
+  if (Math.abs(x) < 1e-6) return 1.0;
+  return 2 * besselJ1(x) / x;
+}
+
+const MEDIUM_PROPS = {
+  air: { name: 'Air (20 °C)', rho: 1.21, c: 343 },
+  water: { name: 'Water (20 °C)', rho: 997, c: 1482 }
+};
+
+function simpsonIntegrate(f, a, b, n) {
+  if (n % 2 !== 0) n++;
+  const h = (b - a) / n;
+  let sum = f(a) + f(b);
+  for (let i = 1; i < n; i++) {
+    const x = a + i * h;
+    sum += (i % 2 === 0 ? 2 : 4) * f(x);
+  }
+  return (h / 3) * sum;
+}
+
+function radiationMetrics(params) {
+  const { radius, rho, c, freq } = params;
+  const velocity = 1.0; // Normalisation uses |V0| = 1 m/s
+  const S = Math.PI * radius * radius;
+  const k = 2 * Math.PI * freq / c;
+  const ka = k * radius;
+  const integrand = theta => {
+    const D = directivity(ka, theta);
+    return Math.pow(Math.abs(D), 2) * Math.sin(theta);
+  };
+  const steps = Math.max(400, Math.round(ka * 200));
+  const integral = simpsonIntegrate(integrand, 0, Math.PI / 2, steps);
+  const pref = (rho * c * velocity * velocity * S * S * k * k) / (2 * Math.PI);
+  const radResistance = pref * integral;
+  const efficiencyRaw = radResistance / (rho * c * S);
+  const efficiency = Math.max(0, Math.min(efficiencyRaw, 1.0001));
+  return { ka, k, radResistance, efficiency, S };
+}
+
+function makeFrequencySweep(params) {
+  const { fmin, fmax, npts } = params;
+  const freqs = new Array(npts);
+  const radResistance = new Array(npts);
+  const effs = new Array(npts);
+  for (let i = 0; i < npts; i++) {
+    const f = fmin + (fmax - fmin) * (i / (npts - 1));
+    const metrics = radiationMetrics({ ...params, freq: f });
+    freqs[i] = f;
+    radResistance[i] = metrics.radResistance;
+    effs[i] = metrics.efficiency;
+  }
+  return { freqs, radResistance, effs };
+}
+
+function makeDirectivityData(ka) {
+  const anglesDeg = [];
+  const intensity = [];
+  const pressure = [];
+ for (let i = -90; i <= 90; i++) {
+    const theta = (i * Math.PI) / 180;
+    const D = directivity(ka, theta);
+    const mag = Math.abs(D);
+    anglesDeg.push(i);
+    pressure.push(mag);
+    intensity.push(Math.max(mag * mag, 1e-9));
+  }
+  return { anglesDeg, intensity, pressure };
+}
+
+function formatNumber(value, digits = 3) {
+  if (!Number.isFinite(value)) return '—';
+  if (Math.abs(value) >= 1000 || Math.abs(value) < 0.01) {
+    return value.toExponential(digits - 1);
+  }
+  return value.toFixed(digits);
+}
+
+function updateDerivedPanel(metrics, params, medium) {
+  const derived = document.getElementById('derived');
+  const area = metrics.S;
+  derived.innerHTML = `
+    <div>ka = <strong>${formatNumber(metrics.ka, 4)}</strong></div>
+    <div>R<sub>rad</sub> ≈ <strong>${formatNumber(metrics.radResistance)}</strong> kg/s</div>
+    <div>σ<sub>rad</sub> ≈ <strong>${formatNumber(metrics.efficiency)}</strong></div>
+    <div>S = ${formatNumber(area, 4)} m²</div>
+    <div>ρcS = ${formatNumber(medium.rho * medium.c * area, 4)} kg/s</div>
+    <div>${medium.name}: ρ=${medium.rho} kg/m³, c=${medium.c} m/s</div>
+  `;
+}
+
+function drawPowerPlot(freqs, radResistance, effs, currentFreq, currentR, currentEff) {
+  const tracePower = {
+    x: freqs,
+    y: radResistance,
+    name: 'Radiation resistance R<sub>rad</sub>',
+    mode: 'lines',
+    line: { color: '#f2f6ff', width: 2 },
+    yaxis: 'y1'
+  };
+  const traceEff = {
+    x: freqs,
+    y: effs,
+    name: 'Radiation efficiency',
+    mode: 'lines',
+    line: { color: '#5ea4ff', dash: 'dot' },
+    yaxis: 'y2'
+  };
+  const pointPower = {
+    x: [currentFreq],
+    y: [currentR],
+    mode: 'markers',
+    marker: { color: '#ffd166', size: 10, symbol: 'circle' },
+    name: 'Current'
+  };
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 70, r: 70, t: 40, b: 70 },
+    legend: { orientation: 'h', y: -0.18, x: 0.1 },
+    xaxis: { title: 'Frequency [Hz]', showgrid: true, zeroline: false },
+    yaxis: { title: 'R<sub>rad</sub> [kg/s]', type: 'log', showgrid: true, zeroline: false },
+    yaxis2: {
+      title: 'σ<sub>rad</sub>',
+      overlaying: 'y',
+      side: 'right',
+      type: 'log',
+      showgrid: false,
+      zeroline: false
+    },
+    annotations: [
+      {
+        x: currentFreq,
+        y: currentEff,
+        xref: 'x',
+        yref: 'y2',
+        text: `σ ≈ ${formatNumber(currentEff)}`,
+        showarrow: true,
+        arrowhead: 2,
+        ax: 30,
+        ay: -40,
+        font: { color: '#5ea4ff' }
+      }
+    ]
+  };
+  Plotly.newPlot('power-plot', [tracePower, traceEff, pointPower], layout, { responsive: true });
+}
+
+function drawPolar(id, angles, values, color, title, radialType) {
+  const trace = {
+    type: 'scatterpolar',
+    mode: 'lines',
+    theta: angles.map(a => a + 90),
+    r: values,
+    line: { color, width: 3 },
+    hovertemplate: 'θ=%{theta:.0f}°<br>value=%{r:.4e}<extra></extra>'
+  };
+  const layout = {
+    title: { text: title, font: { color: color, size: 14 } },
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    polar: {
+      bgcolor: 'rgba(0,0,0,0)',
+      angularaxis: {
+        direction: 'clockwise',
+        rotation: 90,
+        thetaunit: 'degrees',
+        tickmode: 'array',
+        tickvals: [0, 30, 60, 90, 120, 150, 180],
+        ticktext: ['0°', '30°', '60°', '90°', '60°', '30°', '0°'],
+        showline: false,
+        gridcolor: '#23304f',
+        color: '#dce3ff'
+      },
+      radialaxis: {
+        type: radialType,
+        showline: false,
+        gridcolor: '#23304f',
+        color: '#dce3ff',
+        angle: 90,
+        tickfont: { size: 10 }
+      }
+    },
+    margin: { t: 40, b: 30, l: 40, r: 40 }
+  };
+  Plotly.newPlot(id, [trace], layout, { responsive: true });
+}
+
+function readInputs() {
+  const radius = parseFloat(document.getElementById('radius').value);
+  const medium = document.getElementById('medium').value;
+  const fmin = parseFloat(document.getElementById('fmin').value);
+  const fmax = parseFloat(document.getElementById('fmax').value);
+  const npts = parseInt(document.getElementById('npts').value, 10);
+  const freq = parseFloat(document.getElementById('freq').value);
+  return { radius, medium, fmin, fmax, npts, freq };
+}
+
+function clampInputs(inputs) {
+  const copy = { ...inputs };
+  copy.radius = Math.max(copy.radius, 1e-4);
+  if (copy.fmax <= copy.fmin) copy.fmax = copy.fmin * 1.5;
+  copy.npts = Math.max(10, Math.round(copy.npts));
+  copy.freq = Math.max(copy.fmin, Math.min(copy.freq, copy.fmax));
+  return copy;
+}
+
+function updateAll() {
+  const raw = readInputs();
+  const params = clampInputs(raw);
+  Object.entries(params).forEach(([key, value]) => {
+    if (['radius','fmin','fmax','freq'].includes(key)) {
+      document.getElementById(key).value = value;
+    } else if (key === 'npts') {
+      document.getElementById(key).value = value;
+    } else if (key === 'medium') {
+      document.getElementById(key).value = value;
+    }
+  });
+
+  const medium = MEDIUM_PROPS[params.medium] || MEDIUM_PROPS.air;
+  const enriched = { ...params, rho: medium.rho, c: medium.c };
+  const sweep = makeFrequencySweep(enriched);
+  const metrics = radiationMetrics(enriched);
+  updateDerivedPanel(metrics, enriched, medium);
+  drawPowerPlot(sweep.freqs, sweep.radResistance, sweep.effs, params.freq, metrics.radResistance, metrics.efficiency);
+  const direct = makeDirectivityData(metrics.ka);
+  drawPolar('intensity-polar', direct.anglesDeg, direct.intensity, '#ff595e', 'Intensity pattern (|D|²)', 'log');
+  drawPolar('pressure-polar', direct.anglesDeg, direct.pressure, '#5ea4ff', 'Pressure pattern (|D|)', 'linear');
+}
+
+function resetDefaults() {
+  document.getElementById('radius').value = 0.1;
+  document.getElementById('medium').value = 'air';
+  document.getElementById('fmin').value = 10;
+  document.getElementById('fmax').value = 5000;
+  document.getElementById('npts').value = 400;
+  document.getElementById('freq').value = 1000;
+  updateAll();
+}
+
+document.getElementById('update').addEventListener('click', updateAll);
+document.getElementById('reset').addEventListener('click', resetDefaults);
+document.getElementById('medium').addEventListener('change', updateAll);
+window.addEventListener('DOMContentLoaded', updateAll);
+</script>
+</body>
+</html>
