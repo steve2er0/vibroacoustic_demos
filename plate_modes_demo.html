@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Plate Modes & Mobility Explorer</title>
+<script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+<style>
+  :root { --bg:#050a17; --card:#111a2e; --ink:#f2f6ff; --muted:#96a3c6; --accent:#5ea4ff; --accent2:#f58f5d; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--ink); line-height:1.45; }
+  .wrap { max-width:1300px; margin:20px auto 40px; padding:0 clamp(16px,4vw,32px); }
+  .title { font-size:clamp(24px,4vw,34px); font-weight:700; margin-bottom:10px; }
+  .subtitle { color:var(--muted); margin-bottom:26px; max-width:960px; line-height:1.6; font-size:clamp(14px,2vw,16px); }
+  .grid { display:grid; grid-template-columns:minmax(260px,360px) minmax(0,1fr); gap:20px; align-items:start; }
+  .panel { background:var(--card); border-radius:18px; padding:22px; box-shadow:0 10px 30px rgba(0,0,0,.28); }
+  .panel h2 { font-size:15px; margin:0 0 14px 0; color:var(--accent); letter-spacing:.3px; }
+  .row { display:flex; flex-direction:column; align-items:stretch; gap:8px; margin:12px 0; width:100%; }
+  .row label { flex:none; color:var(--muted); font-size:13px; }
+  .row input[type="number"], .row select { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #24304b; background:#091229; color:var(--ink); box-sizing:border-box; }
+  .row input[type="range"] { width:100%; }
+  .toggle { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--muted); }
+  .btn { background:var(--accent); color:#071224; border:none; padding:10px 14px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .15s ease; }
+  .btn.alt { background:#8bd6ff; color:#071224; }
+  .btn:active { transform:translateY(1px); }
+  .btn.small { padding:8px 12px; font-size:12px; }
+  .nums { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-top:14px; }
+  .nums div { background:#091229; border:1px solid #24304b; border-radius:12px; padding:12px; font-size:12px; }
+  .plots { display:grid; grid-template-rows:minmax(320px,45vh) minmax(320px,45vh); gap:18px; }
+  .plot-title { font-size:13px; color:var(--muted); margin-bottom:6px; font-weight:600; letter-spacing:.2px; }
+  @media (min-width:760px) {
+    .row { flex-direction:row; align-items:center; justify-content:space-between; }
+    .row label { flex:1; font-size:14px; }
+    .row input[type="number"], .row select { flex:0 0 150px; width:150px; }
+    .row button { width:auto; }
+    .grid { grid-template-columns:minmax(300px,360px) minmax(0,1fr); }
+  }
+  @media (max-width:760px) {
+    .panel { padding:20px 18px; }
+    .nums { grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+  }
+  @media (max-width:540px) {
+    .wrap { margin:16px auto 32px; }
+    .panel { padding:18px 16px; }
+    .plots { grid-template-rows:minmax(260px,46vh) minmax(260px,46vh); }
+    .btn { width:100%; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">Plate Modes & Mobility Explorer</div>
+  <div class="subtitle">
+    Rectangular plate modes form checkerboard-like patterns as bending waves reflect from every edge. Adjust the plate dimensions, material, damping, and drive location to see how the first nine mode shapes and the drive-point mobility respond. Click anywhere on the mode map to move the drive, then use the view sliders to tilt, rotate, or zoom the surface—or snap back to a top view.
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Plate Parameters</h2>
+      <div class="row">
+        <label for="length">Length a [m]</label>
+        <input id="length" type="number" min="0.1" step="0.01" value="1.0" />
+      </div>
+      <div class="row">
+        <label for="width">Width b [m]</label>
+        <input id="width" type="number" min="0.1" step="0.01" value="0.6" />
+      </div>
+      <div class="row">
+        <label for="thickness">Thickness h [m]</label>
+        <input id="thickness" type="number" min="0.002" step="0.001" value="0.01" />
+      </div>
+      <div class="row">
+        <label for="material">Material</label>
+        <select id="material">
+          <option value="aluminum" selected>Aluminum 6061-T6 (ν = 0.33)</option>
+          <option value="steel">Steel (A36) (ν = 0.30)</option>
+          <option value="titanium">Titanium (Grade 5) (ν = 0.34)</option>
+          <option value="magnesium">Magnesium AZ31B (ν = 0.29)</option>
+          <option value="carbon">Carbon fiber laminate (ν = 0.28)</option>
+          <option value="wood">Spruce (ν = 0.35)</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="damping">Loss factor (ζ, %)</label>
+        <input id="damping" type="number" min="0.05" step="0.05" value="1.0" />
+      </div>
+      <div class="row">
+        <label for="mode-index">Active mode</label>
+        <input id="mode-index" type="number" min="1" max="9" step="1" value="1" />
+      </div>
+      <div class="row toggle">
+        <input type="checkbox" id="animate" checked />
+        <label for="animate" style="margin:0;">Animate selected mode</label>
+      </div>
+      <div class="row" style="margin-top:18px;">
+        <button id="update" class="btn">Update</button>
+        <button id="reset" class="btn alt">Reset</button>
+      </div>
+
+      <h2>Drive Location</h2>
+      <div class="row">
+        <label for="drive-x">Normalized x (0 = left edge)</label>
+        <input id="drive-x" type="range" min="0" max="1" step="0.01" value="0.3" />
+      </div>
+      <div class="row">
+        <label for="drive-y">Normalized y (0 = bottom edge)</label>
+        <input id="drive-y" type="range" min="0" max="1" step="0.01" value="0.4" />
+      </div>
+
+      <h2>View Controls</h2>
+      <div class="row">
+        <label for="view-azimuth">Azimuth (°)</label>
+        <input id="view-azimuth" type="range" min="0" max="360" step="1" value="225" />
+      </div>
+      <div class="row">
+        <label for="view-elevation">Elevation (°)</label>
+        <input id="view-elevation" type="range" min="0" max="90" step="1" value="55" />
+      </div>
+      <div class="row">
+        <label for="view-zoom">Zoom (%)</label>
+        <input id="view-zoom" type="range" min="50" max="180" step="1" value="100" />
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <button id="view-reset" class="btn small" type="button">Top view</button>
+      </div>
+
+      <h2>Derived</h2>
+      <div class="nums" id="derived"></div>
+    </div>
+
+    <div class="panel plots-panel">
+      <div class="plots">
+        <div>
+          <div class="plot-title">Mode shape surface – drag, adjust view sliders, or click to set the drive point</div>
+          <div id="mode-plot" style="height:100%;"></div>
+        </div>
+        <div>
+          <div class="plot-title">Drive-point mobility magnitude |Y(jω)|</div>
+          <div id="mobility-plot" style="height:100%;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const GRID_X = 70;
+const GRID_Y = 70;
+const MODE_TARGET = 9;
+const MOBILITY_POINTS = 650;
+const MATERIALS = {
+  aluminum: { label: 'Aluminum 6061-T6', young: 70e9, density: 2700, nu: 0.33 },
+  steel: { label: 'Steel (A36)', young: 200e9, density: 7850, nu: 0.30 },
+  titanium: { label: 'Titanium Grade 5', young: 110e9, density: 4500, nu: 0.34 },
+  magnesium: { label: 'Magnesium AZ31B', young: 45e9, density: 1800, nu: 0.29 },
+  carbon: { label: 'Carbon fiber laminate', young: 135e9, density: 1600, nu: 0.28 },
+  wood: { label: 'Spruce', young: 11e9, density: 450, nu: 0.35 }
+};
+
+const COLORS = {
+  heatmap: 'RdBu',
+  mobility: '#f2f6ff',
+  peaks: '#f58f5d',
+  drive: '#ffd166'
+};
+
+const state = {
+  params: null,
+  modes: [],
+  activeMode: 1,
+  animate: true,
+  listenerAttached: false,
+  animationHandle: null,
+  phase: 0,
+  driveX: 0.3,
+  driveY: 0.4,
+  gridX: null,
+  gridY: null,
+  heightScale: 0,
+  azimuthDeg: 225,
+  elevationDeg: 55,
+  baseRadius: 2.0,
+  zoomPercent: 100,
+  updatingCamera: false
+};
+
+function readInputs() {
+  const length = Math.max(parseFloat(document.getElementById('length').value) || 0.1, 0.1);
+  const width = Math.max(parseFloat(document.getElementById('width').value) || 0.1, 0.1);
+  const thickness = Math.max(parseFloat(document.getElementById('thickness').value) || 0.001, 0.001);
+  const materialKey = document.getElementById('material').value;
+  const material = MATERIALS[materialKey] || MATERIALS.aluminum;
+  const damping = Math.max((parseFloat(document.getElementById('damping').value) || 0.5) / 100, 0.0001);
+  const activeMode = Math.min(MODE_TARGET, Math.max(1, parseInt(document.getElementById('mode-index').value, 10) || 1));
+  const driveX = Math.min(Math.max(parseFloat(document.getElementById('drive-x').value) || 0, 0), 1);
+  const driveY = Math.min(Math.max(parseFloat(document.getElementById('drive-y').value) || 0, 0), 1);
+  const animate = document.getElementById('animate').checked;
+  return {
+    length,
+    width,
+    thickness,
+    materialKey,
+    young: material.young,
+    density: material.density,
+    nu: material.nu,
+    damping,
+    activeMode,
+    driveX,
+    driveY,
+    animate
+  };
+}
+
+function computePlateModes(params) {
+  const { length, width, thickness, young, density, nu } = params;
+  const area = length * width;
+  const massPerArea = density * thickness;
+  const rigidity = young * Math.pow(thickness, 3) / (12 * (1 - nu * nu));
+  const xNorm = Array.from({ length: GRID_X }, (_, i) => i / (GRID_X - 1));
+  const yNorm = Array.from({ length: GRID_Y }, (_, j) => j / (GRID_Y - 1));
+  const xCoords = xNorm.map(v => v * length);
+  const yCoords = yNorm.map(v => v * width);
+
+  const modesRaw = [];
+  const maxOrder = 6;
+  for (let m = 1; m <= maxOrder; m++) {
+    for (let n = 1; n <= maxOrder; n++) {
+      modesRaw.push({ m, n });
+    }
+  }
+
+  const modes = modesRaw.map(pair => {
+    const { m, n } = pair;
+    const betaSquared = Math.pow(m * Math.PI / length, 2) + Math.pow(n * Math.PI / width, 2);
+    const omega = betaSquared * Math.sqrt(rigidity / massPerArea);
+    const freq = omega / (2 * Math.PI);
+    const integral = area / 4;
+    const normFactor = 1 / Math.sqrt(massPerArea * integral);
+
+    const grid = yNorm.map(v => {
+      const row = new Array(GRID_X);
+      const sinY = Math.sin(n * Math.PI * v);
+      for (let ix = 0; ix < GRID_X; ix++) {
+        const u = xNorm[ix];
+        row[ix] = Math.sin(m * Math.PI * u) * sinY;
+      }
+      return row;
+    });
+
+    let maxAbs = 0;
+    const massNorm = grid.map(row => row.map(val => {
+      const scaled = val * normFactor;
+      maxAbs = Math.max(maxAbs, Math.abs(scaled));
+      return scaled;
+    }));
+
+    const display = massNorm.map(row => row.map(val => maxAbs > 0 ? val / maxAbs : val));
+
+    return {
+      index: 0, // placeholder until sorting
+      m,
+      n,
+      omega,
+      freq,
+      betaSquared,
+      normFactor,
+      massNorm,
+      display,
+      evaluate: (xNormVal, yNormVal) => {
+        return Math.sin(m * Math.PI * xNormVal) * Math.sin(n * Math.PI * yNormVal) * normFactor;
+      }
+    };
+  })
+  .sort((a, b) => a.freq - b.freq)
+  .slice(0, MODE_TARGET)
+  .map((mode, idx) => ({ ...mode, index: idx + 1 }));
+
+  return {
+    modes,
+    xCoords,
+    yCoords,
+    xNorm,
+    yNorm,
+    area,
+    massPerArea,
+    rigidity
+  };
+}
+
+function computeMobility(modes, params) {
+  const freqs = modes.map(m => m.freq);
+  const fMin = Math.max(1, Math.min(...freqs) * 0.4);
+  const fMax = Math.max(...freqs) * 1.4;
+  const freqAxis = Array.from({ length: MOBILITY_POINTS }, (_, i) => {
+    const t = i / (MOBILITY_POINTS - 1);
+    return fMin * Math.pow(fMax / fMin, t);
+  });
+
+  const zeta = params.damping;
+  const phiDrive = modes.map(mode => mode.evaluate(params.driveX, params.driveY));
+  const mobilityMag = new Array(freqAxis.length).fill(0);
+
+  for (let i = 0; i < freqAxis.length; i++) {
+    const omega = 2 * Math.PI * freqAxis[i];
+    let real = 0;
+    let imag = 0;
+    for (let k = 0; k < modes.length; k++) {
+      const mode = modes[k];
+      const phi = phiDrive[k];
+      const denomReal = mode.omega * mode.omega - omega * omega;
+      const denomImag = 2 * zeta * mode.omega * omega;
+      const denomMagSq = denomReal * denomReal + denomImag * denomImag;
+      const num = phi * phi * omega;
+      real += num * denomImag / denomMagSq;
+      imag += num * denomReal / denomMagSq;
+    }
+    mobilityMag[i] = Math.max(Math.sqrt(real * real + imag * imag), 1e-12);
+  }
+
+  const peaks = modes.map((mode, idx) => {
+    const phi = phiDrive[idx];
+    const peak = Math.max(Math.abs(phi * phi) / (2 * zeta * mode.omega), 1e-12);
+    return { freq: mode.freq, value: peak };
+  });
+
+  return { freqAxis, mobilityMag, peaks };
+}
+
+function buildModePlot(data) {
+  state.listenerAttached = false;
+  if (window.Plotly && document.getElementById('mode-plot')) {
+    Plotly.purge('mode-plot');
+  }
+
+  const active = data.modes[state.activeMode - 1] || data.modes[0];
+  const surface = active.display.map(row => row.map(val => val * state.heightScale));
+  const driveBase = active.evaluate(state.driveX, state.driveY) * state.heightScale;
+  const planeDim = Math.max(state.params.length, state.params.width);
+  const maxDim = Math.max(planeDim, state.heightScale || 1);
+  const aspect = {
+    x: state.params.length / maxDim,
+    y: state.params.width / maxDim,
+    z: Math.max(state.heightScale / maxDim, 0.25)
+  };
+
+  const surfaceTrace = {
+    type: 'surface',
+    x: data.xCoords,
+    y: data.yCoords,
+    z: surface,
+    surfacecolor: surface,
+    colorscale: COLORS.heatmap,
+    cmin: -state.heightScale,
+    cmax: state.heightScale,
+    showscale: false,
+    opacity: 0.96,
+    hovertemplate: 'x = %{x:.3f} m<br>y = %{y:.3f} m<br>ϕ = %{surfacecolor:.3f}<extra></extra>',
+    lighting: { diffuse: 0.85, specular: 0.12, roughness: 0.7 },
+    contours: {
+      z: { show: true, usecolormap: true, highlightcolor: '#c3cde3', project: { z: true } }
+    }
+  };
+
+  const driveTrace = {
+    type: 'scatter3d',
+    mode: 'markers',
+    x: [state.params.length * state.driveX],
+    y: [state.params.width * state.driveY],
+    z: [driveBase],
+    marker: { color: COLORS.drive, size: 7, symbol: 'x', line: { color: '#111a2e', width: 1.6 } },
+    hoverinfo: 'skip'
+  };
+
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 0, r: 0, t: 20, b: 0 },
+    scene: {
+      xaxis: {
+        title: 'x [m]',
+        range: [0, state.params.length],
+        showgrid: true,
+        gridcolor: 'rgba(255,255,255,0.06)'
+      },
+      yaxis: {
+        title: 'y [m]',
+        range: [0, state.params.width],
+        showgrid: true,
+        gridcolor: 'rgba(255,255,255,0.06)'
+      },
+      zaxis: {
+        title: 'Mode amplitude (arb)',
+        showgrid: true,
+        gridcolor: 'rgba(255,255,255,0.08)',
+        range: [-state.heightScale, state.heightScale],
+        autorange: false
+      },
+      aspectratio: aspect,
+      camera: {
+        eye: computeCameraEye()
+      },
+      dragmode: 'orbit'
+    }
+  };
+
+  Plotly.newPlot('mode-plot', [surfaceTrace, driveTrace], layout, { responsive: true, displayModeBar: false });
+}
+
+function degToRad(deg) {
+  return (deg * Math.PI) / 180;
+}
+
+function computeCameraEye(overrides = {}) {
+  const zoom = overrides.zoomPercent ?? state.zoomPercent ?? 100;
+  const baseRadius = overrides.baseRadius ?? state.baseRadius ?? 2;
+  const radius = baseRadius * (100 / Math.max(1, zoom));
+  const azimuth = degToRad(overrides.azimuthDeg ?? state.azimuthDeg ?? 0);
+  const elevation = degToRad(overrides.elevationDeg ?? state.elevationDeg ?? 60);
+  const cosEl = Math.cos(elevation);
+  const sinEl = Math.sin(elevation);
+  return {
+    x: radius * cosEl * Math.cos(azimuth),
+    y: radius * cosEl * Math.sin(azimuth),
+    z: radius * sinEl
+  };
+}
+
+function applyCamera() {
+  const modePlot = document.getElementById('mode-plot');
+  if (!modePlot || !window.Plotly) return;
+  const eye = computeCameraEye();
+  state.updatingCamera = true;
+  const promise = Plotly.relayout('mode-plot', { 'scene.camera.eye': eye });
+  if (promise && typeof promise.then === 'function') {
+    promise.then(
+      () => { state.updatingCamera = false; },
+      () => { state.updatingCamera = false; }
+    );
+  } else {
+    state.updatingCamera = false;
+  }
+}
+
+function extractEye(relayoutEvent) {
+  if (!relayoutEvent) return null;
+  if (relayoutEvent['scene.camera.eye']) {
+    return relayoutEvent['scene.camera.eye'];
+  }
+  const eye = {};
+  let found = false;
+  ['x', 'y', 'z'].forEach(axis => {
+    const key = `scene.camera.eye.${axis}`;
+    if (Object.prototype.hasOwnProperty.call(relayoutEvent, key)) {
+      eye[axis] = relayoutEvent[key];
+      found = true;
+    }
+  });
+  return found ? eye : null;
+}
+
+function updateAnglesFromEye(eye) {
+  const { x = 0, y = 0, z = 1 } = eye;
+  const radius = Math.sqrt(x * x + y * y + z * z) || 1;
+  const azimuth = (Math.atan2(y, x) * 180) / Math.PI;
+  const elevation = (Math.asin(z / radius) * 180) / Math.PI;
+  state.azimuthDeg = (azimuth + 360) % 360;
+  state.elevationDeg = Math.min(90, Math.max(0, elevation));
+  if (state.baseRadius > 0) {
+    const zoom = Math.max(50, Math.min(180, state.baseRadius * 100 / radius));
+    state.zoomPercent = zoom;
+    const zoomControl = document.getElementById('view-zoom');
+    if (zoomControl) zoomControl.value = Math.round(zoom);
+  }
+  const azControl = document.getElementById('view-azimuth');
+  const elControl = document.getElementById('view-elevation');
+  if (azControl) azControl.value = Math.round(state.azimuthDeg);
+  if (elControl) elControl.value = Math.round(state.elevationDeg);
+}
+
+function buildMobilityPlot(mobility, data) {
+  if (window.Plotly && document.getElementById('mobility-plot')) {
+    Plotly.purge('mobility-plot');
+  }
+
+  const traceMob = {
+    x: mobility.freqAxis,
+    y: mobility.mobilityMag,
+    mode: 'lines',
+    line: { color: COLORS.mobility, width: 2 },
+    name: 'Mobility'
+  };
+
+  const tracePeaks = {
+    x: mobility.peaks.map(p => p.freq),
+    y: mobility.peaks.map(p => p.value),
+    mode: 'markers',
+    marker: { color: COLORS.peaks, size: 8, symbol: 'triangle-up' },
+    name: 'Resonance estimate'
+  };
+
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 70, r: 20, t: 10, b: 50 },
+    xaxis: {
+      type: 'log',
+      title: 'Frequency [Hz]',
+      showgrid: true,
+      gridcolor: 'rgba(255,255,255,0.06)'
+    },
+    yaxis: {
+      type: 'log',
+      title: 'Mobility |Y| [m/(N·s)]',
+      showgrid: true,
+      gridcolor: 'rgba(255,255,255,0.06)'
+    },
+    legend: { orientation: 'h', y: -0.25, x: 0.05 }
+  };
+
+  Plotly.newPlot('mobility-plot', [traceMob, tracePeaks], layout, { responsive: true, displayModeBar: false });
+}
+
+function updateDerivedPanel(data, params) {
+  const container = document.getElementById('derived');
+  const mat = MATERIALS[params.materialKey] || MATERIALS.aluminum;
+  const first = data.modes[0];
+  const last = data.modes[data.modes.length - 1];
+  const mass = data.massPerArea * data.area;
+  container.innerHTML = `
+    <div>Material: ${mat.label}</div>
+    <div>E = ${formatNumber(mat.young / 1e9, 4)} GPa</div>
+    <div>ν = ${formatNumber(mat.nu, 3)}</div>
+    <div>ρ = ${formatNumber(mat.density, 4)} kg/m³</div>
+    <div>D = ${formatNumber(data.rigidity, 4)} N·m</div>
+    <div>Area = ${formatNumber(data.area, 4)} m²</div>
+    <div>Total mass ≈ ${formatNumber(mass, 4)} kg</div>
+    <div>f₁ ≈ ${formatNumber(first.freq, 4)} Hz</div>
+    <div>fₙ ≈ ${formatNumber(last.freq, 4)} Hz</div>
+    <div>Drive (x/a, y/b) = (${formatNumber(params.driveX, 3)}, ${formatNumber(params.driveY, 3)})</div>
+  `;
+}
+
+function formatNumber(value, digits = 3) {
+  if (!Number.isFinite(value)) return '—';
+  const absVal = Math.abs(value);
+  if (absVal >= 1000 || absVal < 0.01) {
+    return value.toExponential(digits - 1);
+  }
+  return value.toFixed(digits);
+}
+
+function updatePlots() {
+  const rawInputs = readInputs();
+  document.getElementById('mode-index').value = rawInputs.activeMode;
+  state.params = rawInputs;
+  state.activeMode = rawInputs.activeMode;
+  state.driveX = rawInputs.driveX;
+  state.driveY = rawInputs.driveY;
+  state.animate = rawInputs.animate;
+
+  state.heightScale = Math.max(0.02, Math.min(rawInputs.length, rawInputs.width) * 0.35);
+  state.phase = 0;
+
+  const planeDim = Math.max(rawInputs.length, rawInputs.width);
+  const defaultRadius = Math.max(1.6, planeDim * 1.3);
+  state.baseRadius = defaultRadius;
+  if (!Number.isFinite(state.zoomPercent)) {
+    state.zoomPercent = 100;
+  }
+
+  const azControl = document.getElementById('view-azimuth');
+  const elControl = document.getElementById('view-elevation');
+  const zoomControl = document.getElementById('view-zoom');
+  if (azControl) {
+    azControl.value = state.azimuthDeg;
+  }
+  if (elControl) {
+    elControl.value = state.elevationDeg;
+  }
+  if (zoomControl) {
+    zoomControl.value = state.zoomPercent;
+  }
+
+  const data = computePlateModes(rawInputs);
+  state.modes = data.modes;
+  state.gridX = data.xCoords;
+  state.gridY = data.yCoords;
+
+  updateDerivedPanel(data, rawInputs);
+  document.getElementById('mode-index').max = data.modes.length;
+
+  const mobility = computeMobility(data.modes, rawInputs);
+  buildModePlot(data);
+  buildMobilityPlot(mobility, data);
+  setupInteractions();
+  startAnimation();
+  applyCamera();
+}
+
+function setupInteractions() {
+  const modePlot = document.getElementById('mode-plot');
+  if (!modePlot || state.listenerAttached) return;
+  modePlot.on('plotly_click', evt => {
+    if (!evt || !evt.points || !evt.points.length) return;
+    const { x, y } = evt.points[0];
+    const newX = Math.min(Math.max(x / state.params.length, 0), 1);
+    const newY = Math.min(Math.max(y / state.params.width, 0), 1);
+    document.getElementById('drive-x').value = newX;
+    document.getElementById('drive-y').value = newY;
+    state.driveX = newX;
+    state.driveY = newY;
+    updatePlots();
+  });
+
+  modePlot.on('plotly_relayout', evt => {
+    if (!evt || state.updatingCamera) return;
+    const eye = extractEye(evt);
+    if (!eye) return;
+    updateAnglesFromEye(eye);
+  });
+  state.listenerAttached = true;
+}
+
+function startAnimation() {
+  if (state.animationHandle) {
+    cancelAnimationFrame(state.animationHandle);
+    state.animationHandle = null;
+  }
+
+  const modePlot = document.getElementById('mode-plot');
+  if (!modePlot || !state.modes.length) return;
+  const activeIdx = state.activeMode - 1;
+  const active = state.modes[activeIdx];
+  if (!active) return;
+
+  const baseSurface = active.display.map(row => row.map(val => val * state.heightScale));
+  const driveBase = active.evaluate(state.driveX, state.driveY) * state.heightScale;
+  const driveCoords = {
+    x: [[state.params.length * state.driveX]],
+    y: [[state.params.width * state.driveY]]
+  };
+
+  Plotly.relayout('mode-plot', {
+    'scene.zaxis.range': [-state.heightScale, state.heightScale],
+    'scene.zaxis.autorange': false
+  });
+
+  if (!state.animate) {
+    Plotly.restyle('mode-plot', { z: [baseSurface], surfacecolor: [baseSurface] }, [0]);
+    Plotly.restyle('mode-plot', { x: driveCoords.x, y: driveCoords.y, z: [[driveBase]] }, [1]);
+    return;
+  }
+
+  const animateStep = () => {
+    state.phase += 0.08;
+    const amp = Math.sin(state.phase);
+    const z = baseSurface.map(row => row.map(val => val * amp));
+    const driveZ = driveBase * amp;
+    Plotly.restyle('mode-plot', { z: [z], surfacecolor: [z] }, [0]);
+    Plotly.restyle('mode-plot', { x: driveCoords.x, y: driveCoords.y, z: [[driveZ]] }, [1]);
+    if (state.animate) {
+      state.animationHandle = requestAnimationFrame(animateStep);
+    }
+  };
+
+  state.animationHandle = requestAnimationFrame(animateStep);
+}
+
+function resetDefaults() {
+  document.getElementById('length').value = 1.0;
+  document.getElementById('width').value = 0.6;
+  document.getElementById('thickness').value = 0.01;
+  document.getElementById('material').value = 'aluminum';
+  document.getElementById('damping').value = 1.0;
+  document.getElementById('mode-index').value = 1;
+  document.getElementById('drive-x').value = 0.3;
+  document.getElementById('drive-y').value = 0.4;
+  document.getElementById('animate').checked = true;
+  document.getElementById('view-azimuth').value = 225;
+  document.getElementById('view-elevation').value = 55;
+  document.getElementById('view-zoom').value = 100;
+  state.azimuthDeg = 225;
+  state.elevationDeg = 55;
+  state.zoomPercent = 100;
+  updatePlots();
+}
+
+['length','width','thickness','material','damping','mode-index','animate'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    updatePlots();
+  });
+});
+
+document.getElementById('drive-x').addEventListener('input', () => {
+  updatePlots();
+});
+
+document.getElementById('drive-y').addEventListener('input', () => {
+  updatePlots();
+});
+
+document.getElementById('mode-index').addEventListener('input', () => {
+  updatePlots();
+});
+
+document.getElementById('view-azimuth').addEventListener('input', (evt) => {
+  const val = parseFloat(evt.target.value);
+  if (Number.isFinite(val)) {
+    const wrapped = ((val % 360) + 360) % 360;
+    state.azimuthDeg = wrapped;
+    evt.target.value = wrapped;
+    applyCamera();
+  }
+});
+
+document.getElementById('view-elevation').addEventListener('input', (evt) => {
+  const val = Math.max(0, Math.min(90, parseFloat(evt.target.value)));
+  if (Number.isFinite(val)) {
+    state.elevationDeg = val;
+    evt.target.value = val;
+    applyCamera();
+  }
+});
+
+document.getElementById('view-zoom').addEventListener('input', (evt) => {
+  const val = Math.max(50, Math.min(180, parseFloat(evt.target.value)));
+  if (Number.isFinite(val)) {
+    state.zoomPercent = val;
+    evt.target.value = val;
+    applyCamera();
+  }
+});
+
+document.getElementById('view-reset').addEventListener('click', () => {
+  state.azimuthDeg = 0;
+  state.elevationDeg = 88;
+  state.zoomPercent = 100;
+  if (state.params) {
+    const planeDim = Math.max(state.params.length, state.params.width);
+    state.baseRadius = Math.max(1.6, planeDim * 1.3);
+  }
+  const azControl = document.getElementById('view-azimuth');
+  const elControl = document.getElementById('view-elevation');
+  const zoomControl = document.getElementById('view-zoom');
+  if (azControl) azControl.value = state.azimuthDeg;
+  if (elControl) elControl.value = state.elevationDeg;
+  if (zoomControl) zoomControl.value = state.zoomPercent;
+  applyCamera();
+});
+
+document.getElementById('update').addEventListener('click', updatePlots);
+document.getElementById('reset').addEventListener('click', resetDefaults);
+
+window.addEventListener('DOMContentLoaded', () => {
+  updatePlots();
+});
+
+window.addEventListener('resize', () => {
+  if (!window.Plotly) return;
+  ['mode-plot', 'mobility-plot'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      Plotly.Plots.resize(el);
+    }
+  });
+});
+</script>
+</body>
+</html>
