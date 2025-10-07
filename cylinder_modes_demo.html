@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cylinder Modes & Mobility Explorer</title>
+<script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+<style>
+  :root { --bg:#040915; --card:#101a2d; --ink:#f1f6ff; --muted:#9aa8c8; --accent:#5ea4ff; --accent2:#f58f5d; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--ink); line-height:1.45; }
+  .wrap { max-width:1300px; margin:20px auto 40px; padding:0 clamp(16px,4vw,32px); }
+  .title { font-size:clamp(24px,4vw,34px); font-weight:700; margin-bottom:10px; }
+  .subtitle { color:var(--muted); margin-bottom:26px; max-width:980px; line-height:1.6; font-size:clamp(14px,2vw,16px); }
+  .grid { display:grid; grid-template-columns:minmax(280px,360px) minmax(0,1fr); gap:20px; align-items:start; }
+  .panel { background:var(--card); border-radius:18px; padding:22px; box-shadow:0 10px 30px rgba(0,0,0,.28); }
+  .panel h2 { font-size:15px; margin:0 0 14px 0; color:var(--accent); letter-spacing:.3px; }
+  .row { display:flex; flex-direction:column; gap:8px; margin:12px 0; width:100%; }
+  .row label { color:var(--muted); font-size:13px; }
+  .row input[type="number"], .row select { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #26324a; background:#091227; color:var(--ink); box-sizing:border-box; }
+  .row input[type="range"] { width:100%; }
+  .toggle { flex-direction:row; align-items:center; }
+  .toggle label { margin:0; }
+  .btn { background:var(--accent); color:#071224; border:none; padding:10px 14px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .15s ease; }
+  .btn.alt { background:#8bd6ff; color:#071224; }
+  .btn.small { padding:8px 12px; font-size:12px; }
+  .btn:active { transform:translateY(1px); }
+  .nums { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-top:14px; }
+  .nums div { background:#091227; border:1px solid #26324a; border-radius:12px; padding:12px; font-size:12px; }
+  .plots { display:grid; grid-template-rows:minmax(320px,45vh) minmax(320px,45vh); gap:18px; }
+  .plot-title { font-size:13px; color:var(--muted); margin-bottom:6px; font-weight:600; letter-spacing:.2px; }
+  @media (min-width:760px) {
+    .row { flex-direction:row; align-items:center; justify-content:space-between; }
+    .row label { flex:1; font-size:14px; }
+    .row input[type="number"], .row select { flex:0 0 150px; width:150px; }
+    .row button { width:auto; }
+    .grid { grid-template-columns:minmax(300px,360px) minmax(0,1fr); }
+  }
+  @media (max-width:760px) {
+    .panel { padding:20px 18px; }
+    .nums { grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+  }
+  @media (max-width:540px) {
+    .wrap { margin:16px auto 32px; }
+    .panel { padding:18px 16px; }
+    .plots { grid-template-rows:minmax(260px,46vh) minmax(260px,46vh); }
+    .btn { width:100%; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">Simply Supported Cylinder Modes & Mobility</div>
+  <div class="subtitle">
+    Thin cylindrical shells support rich vibration patterns that wrap circumferentially while rippling along the length. Adjust the shell geometry, material, damping, and drive location to see how the first ten mode shapes behave and how the drive-point mobility tends toward the infinite-cylinder limit.
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Cylinder Parameters</h2>
+      <div class="row">
+        <label for="length">Length L [m]</label>
+        <input id="length" type="number" min="0.2" step="0.01" value="1.2" />
+      </div>
+      <div class="row">
+        <label for="radius">Radius R [m]</label>
+        <input id="radius" type="number" min="0.05" step="0.005" value="0.2" />
+      </div>
+      <div class="row">
+        <label for="thickness">Thickness h [m]</label>
+        <input id="thickness" type="number" min="0.001" step="0.001" value="0.006" />
+      </div>
+      <div class="row">
+        <label for="material">Material</label>
+        <select id="material">
+          <option value="aluminum" selected>Aluminum 6061-T6 (ν = 0.33)</option>
+          <option value="steel">Steel (A36) (ν = 0.30)</option>
+          <option value="titanium">Titanium (Grade 5) (ν = 0.34)</option>
+          <option value="magnesium">Magnesium AZ31B (ν = 0.29)</option>
+          <option value="carbon">Carbon fiber laminate (ν = 0.28)</option>
+          <option value="wood">Spruce (ν = 0.35)</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="damping">Loss factor (ζ, %)</label>
+        <input id="damping" type="number" min="0.05" step="0.05" value="0.8" />
+      </div>
+      <div class="row">
+        <label for="mode-index">Active mode</label>
+        <input id="mode-index" type="number" min="1" max="10" step="1" value="1" />
+      </div>
+      <div class="row toggle">
+        <input type="checkbox" id="animate" checked />
+        <label for="animate">Animate selected mode</label>
+      </div>
+      <div class="row toggle">
+        <input type="checkbox" id="show-infinite" checked />
+        <label for="show-infinite">Show infinite-cylinder mobility</label>
+      </div>
+      <div class="row" style="margin-top:18px;">
+        <button id="update" class="btn">Update</button>
+        <button id="reset" class="btn alt">Reset</button>
+      </div>
+
+      <h2>Drive Location</h2>
+      <div class="row">
+        <label for="drive-theta">Circumferential position (0 = seam)</label>
+        <input id="drive-theta" type="range" min="0" max="1" step="0.01" value="0.25" />
+      </div>
+      <div class="row">
+        <label for="drive-axial">Axial position (0 = bottom ring)</label>
+        <input id="drive-axial" type="range" min="0" max="1" step="0.01" value="0.4" />
+      </div>
+
+      <h2>View Controls</h2>
+      <div class="row">
+        <label for="view-azimuth">Azimuth (°)</label>
+        <input id="view-azimuth" type="range" min="0" max="360" step="1" value="225" />
+      </div>
+      <div class="row">
+        <label for="view-elevation">Elevation (°)</label>
+        <input id="view-elevation" type="range" min="0" max="90" step="1" value="55" />
+      </div>
+      <div class="row">
+        <label for="view-zoom">Zoom (%)</label>
+        <input id="view-zoom" type="range" min="50" max="180" step="1" value="100" />
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <button id="view-reset" class="btn small" type="button">Top view</button>
+      </div>
+
+      <h2>Derived</h2>
+      <div class="nums" id="derived"></div>
+    </div>
+
+    <div class="panel plots-panel">
+      <div class="plots">
+        <div>
+          <div class="plot-title">Mode shape – drag, adjust view sliders, or click to move the drive</div>
+          <div id="mode-plot" style="height:100%;"></div>
+        </div>
+        <div>
+          <div class="plot-title">Drive-point mobility magnitude |Y(jω)|</div>
+          <div id="mobility-plot" style="height:100%;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const MATERIALS = {
+  aluminum: { label: 'Aluminum 6061-T6', young: 70e9, density: 2700, nu: 0.33 },
+  steel: { label: 'Steel (A36)', young: 200e9, density: 7850, nu: 0.30 },
+  titanium: { label: 'Titanium Grade 5', young: 110e9, density: 4500, nu: 0.34 },
+  magnesium: { label: 'Magnesium AZ31B', young: 45e9, density: 1800, nu: 0.29 },
+  carbon: { label: 'Carbon fiber laminate', young: 135e9, density: 1600, nu: 0.28 },
+  wood: { label: 'Spruce', young: 11e9, density: 450, nu: 0.35 }
+};
+
+const COLORS = {
+  surface: 'RdBu',
+  mobility: '#f2f6ff',
+  peaks: '#f58f5d',
+  infinite: '#8bd6ff',
+  drive: '#ffd166'
+};
+
+const THETA_POINTS = 80;
+const AXIAL_POINTS = 70;
+const MODE_TARGET = 10;
+const MOBILITY_POINTS = 650;
+
+const state = {
+  params: null,
+  modes: [],
+  activeMode: 1,
+  animate: true,
+  showInfinite: true,
+  listenerAttached: false,
+  animationHandle: null,
+  phase: 0,
+  driveTheta: 0.25,
+  driveAxial: 0.4,
+  thetaVals: null,
+  axialVals: null,
+  heightScale: 0,
+  azimuthDeg: 225,
+  elevationDeg: 55,
+  baseRadius: 0,
+  zoomPercent: 100,
+  updatingCamera: false
+};
+
+function readInputs() {
+  const length = Math.max(parseFloat(document.getElementById('length').value) || 0.2, 0.2);
+  const radius = Math.max(parseFloat(document.getElementById('radius').value) || 0.05, 0.05);
+  const thickness = Math.max(parseFloat(document.getElementById('thickness').value) || 0.001, 0.001);
+  const materialKey = document.getElementById('material').value;
+  const material = MATERIALS[materialKey] || MATERIALS.aluminum;
+  const damping = Math.max((parseFloat(document.getElementById('damping').value) || 0.5) / 100, 0.0001);
+  const activeMode = Math.min(MODE_TARGET, Math.max(1, parseInt(document.getElementById('mode-index').value, 10) || 1));
+  const driveTheta = Math.min(Math.max(parseFloat(document.getElementById('drive-theta').value) || 0, 0), 1);
+  const driveAxial = Math.min(Math.max(parseFloat(document.getElementById('drive-axial').value) || 0, 0), 1);
+  const animate = document.getElementById('animate').checked;
+  const showInfinite = document.getElementById('show-infinite').checked;
+  return {
+    length,
+    radius,
+    thickness,
+    materialKey,
+    young: material.young,
+    density: material.density,
+    nu: material.nu,
+    damping,
+    activeMode,
+    driveTheta,
+    driveAxial,
+    animate,
+    showInfinite
+  };
+}
+
+function computeCylinderModes(params) {
+  const { length, radius, thickness, young, density, nu } = params;
+  const massPerArea = density * thickness;
+  const bendingStiffness = young * Math.pow(thickness, 3) / (12 * (1 - nu * nu));
+
+  const thetaVals = Array.from({ length: THETA_POINTS }, (_, i) => (i / (THETA_POINTS - 1)) * 2 * Math.PI);
+  const axialVals = Array.from({ length: AXIAL_POINTS }, (_, j) => (j / (AXIAL_POINTS - 1)) * length);
+  const thetaNorm = thetaVals.map(v => v / (2 * Math.PI));
+  const axialNorm = axialVals.map(v => v / length);
+
+  const candidates = [];
+  for (let m = 1; m <= 5; m++) {
+    for (let n = 1; n <= 5; n++) {
+      candidates.push({ m, n });
+    }
+  }
+
+  const modes = candidates.map(pair => {
+    const { m, n } = pair;
+    const kz = n * Math.PI / length;
+    const term1 = Math.pow(m * m - 1, 2) / Math.pow(radius, 4);
+    const term2 = 2 * (m * m - 1) * Math.pow(kz, 2) / Math.pow(radius, 2);
+    const term3 = Math.pow(kz, 4);
+    const bendingTerm = (bendingStiffness / massPerArea) * (term1 + term2 + term3);
+    const membraneTerm = (young / (density * (1 - nu * nu))) * Math.pow(kz, 2);
+    const omega = Math.sqrt(Math.max(bendingTerm + membraneTerm, 0));
+    const freq = omega / (2 * Math.PI);
+
+    const grid = axialNorm.map(zN => {
+      const row = new Array(THETA_POINTS);
+      const sinAxial = Math.sin(n * Math.PI * zN);
+      for (let i = 0; i < THETA_POINTS; i++) {
+        const theta = thetaVals[i];
+        row[i] = Math.sin(m * theta) * sinAxial;
+      }
+      return row;
+    });
+
+    const dTheta = 2 * Math.PI / (THETA_POINTS - 1);
+    const dz = length / (AXIAL_POINTS - 1);
+    let integral = 0;
+    for (let j = 0; j < AXIAL_POINTS; j++) {
+      for (let i = 0; i < THETA_POINTS; i++) {
+        const val = grid[j][i];
+        integral += val * val;
+      }
+    }
+    integral *= radius * dTheta * dz;
+    const normFactor = 1 / Math.sqrt(Math.max(massPerArea * integral, 1e-18));
+
+    const massNorm = grid.map(row => row.map(v => v * normFactor));
+    const maxAbs = Math.max(...massNorm.flat().map(Math.abs)) || 1;
+    const display = massNorm.map(row => row.map(v => v / maxAbs));
+
+    return {
+      index: 0,
+      m,
+      n,
+      omega,
+      freq,
+      normFactor,
+      massNorm,
+      display,
+      evaluate: (thetaNormVal, axialNormVal) => {
+        const theta = thetaNormVal * 2 * Math.PI;
+        return Math.sin(m * theta) * Math.sin(n * Math.PI * axialNormVal) * normFactor;
+      }
+    };
+  })
+  .sort((a, b) => a.freq - b.freq)
+  .slice(0, MODE_TARGET)
+  .map((mode, idx) => ({ ...mode, index: idx + 1 }));
+
+  return {
+    modes,
+    thetaVals,
+    axialVals,
+    massPerArea,
+    bendingStiffness,
+    area: 2 * Math.PI * radius * length,
+    mass: 2 * Math.PI * radius * length * massPerArea,
+    ringFreq: computeRingFrequency(params)
+  };
+}
+
+function computeMobility(modes, params) {
+  if (!modes.length) {
+    const zeros = new Array(MOBILITY_POINTS).fill(0);
+    return { freqAxis: zeros, mobilityMag: zeros, peaks: [], infinite: zeros };
+  }
+  const freqs = modes.map(m => m.freq);
+  const fMin = Math.max(1, Math.min(...freqs) * 0.4);
+  const fMax = Math.max(...freqs) * 1.4;
+  const freqAxis = Array.from({ length: MOBILITY_POINTS }, (_, i) => {
+    const t = i / (MOBILITY_POINTS - 1);
+    return fMin * Math.pow(fMax / fMin, t);
+  });
+
+  const zeta = params.damping;
+  const phiDrive = modes.map(mode => mode.evaluate(params.driveTheta, params.driveAxial));
+  const mobilityMag = new Array(freqAxis.length).fill(0);
+
+  for (let i = 0; i < freqAxis.length; i++) {
+    const omega = 2 * Math.PI * freqAxis[i];
+    let real = 0;
+    let imag = 0;
+    for (let k = 0; k < modes.length; k++) {
+      const mode = modes[k];
+      const phi = phiDrive[k];
+      const denomReal = mode.omega * mode.omega - omega * omega;
+      const denomImag = 2 * zeta * mode.omega * omega;
+      const denomMagSq = denomReal * denomReal + denomImag * denomImag;
+      const num = phi * phi * omega;
+      real += num * denomImag / denomMagSq;
+      imag += num * denomReal / denomMagSq;
+    }
+    mobilityMag[i] = Math.max(Math.sqrt(real * real + imag * imag), 1e-12);
+  }
+
+  const peaks = modes.map((mode, idx) => {
+    const phi = phiDrive[idx];
+    const peak = Math.max(Math.abs(phi * phi) / (2 * zeta * mode.omega), 1e-12);
+    return { freq: mode.freq, value: peak };
+  });
+
+  const infinite = computeInfiniteMobility(params, freqAxis);
+  return { freqAxis, mobilityMag, peaks, infinite };
+}
+
+function computeInfiniteMobility(params, freqAxis) {
+  const { thickness, density, young, nu, radius } = params;
+  const bendingStiffness = young * Math.pow(thickness, 3) / (12 * (1 - nu * nu));
+  const base = Math.max(bendingStiffness * density * thickness, 1e-18);
+  const coeff = 1 / (4 * Math.PI * Math.max(radius, 1e-4) * Math.sqrt(base));
+  return freqAxis.map(f => {
+    const omega = 2 * Math.PI * Math.max(f, 1e-6);
+    return coeff / Math.sqrt(omega);
+  });
+}
+
+function computeRingFrequency(params) {
+  const { young, density, nu, thickness, radius } = params;
+  const bendingStiffness = young * Math.pow(thickness, 3) / (12 * (1 - nu * nu));
+  const denom = Math.max(density * thickness * Math.pow(radius, 4), 1e-18);
+  const omegaRing = Math.sqrt(Math.max(bendingStiffness / denom, 0));
+  return omegaRing / (2 * Math.PI);
+}
+
+function buildModePlot(data) {
+  state.listenerAttached = false;
+  if (window.Plotly && document.getElementById('mode-plot')) {
+    Plotly.purge('mode-plot');
+  }
+
+  const active = data.modes[state.activeMode - 1] || data.modes[0];
+  if (!active) return;
+
+  const radius = state.params.radius;
+  const surface = active.display;
+  state.heightScale = Math.max(radius * 0.12, 0.02);
+  const thetaVals = data.thetaVals;
+  const axialVals = data.axialVals;
+  state.thetaVals = thetaVals;
+  state.axialVals = axialVals;
+  state.baseRadius = Math.max(
+    radius * 4.5,
+    radius + state.heightScale * 6,
+    state.params.length * 0.8,
+    0.5
+  );
+
+  const initialAmp = state.animate ? 0 : 1;
+  const { xMatrix, yMatrix, colorMatrix } = generateSurfaceMatrices(surface, initialAmp);
+  const zMatrix = buildZMatrix(axialVals, thetaVals.length);
+
+  const surfaceTrace = {
+    type: 'surface',
+    x: xMatrix,
+    y: yMatrix,
+    z: zMatrix,
+    surfacecolor: colorMatrix,
+    colorscale: COLORS.surface,
+    cmin: -state.heightScale,
+    cmax: state.heightScale,
+    showscale: false,
+    opacity: 0.96,
+    hovertemplate: 'θ = %{customdata[0]:.2f} rad<br>z = %{z:.3f} m<br>w* = %{surfacecolor:.3f}<extra></extra>',
+    customdata: buildCustomData(thetaVals, axialVals)
+  };
+
+  const marker = computeDriveMarker(active, initialAmp);
+
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 0, r: 0, t: 20, b: 0 },
+    scene: {
+      xaxis: { title: 'x [m]', showgrid: true, gridcolor: 'rgba(255,255,255,0.06)' },
+      yaxis: { title: 'y [m]', showgrid: true, gridcolor: 'rgba(255,255,255,0.06)' },
+      zaxis: { title: 'z [m]', range: [0, state.params.length], showgrid: true, gridcolor: 'rgba(255,255,255,0.06)' },
+      camera: { eye: computeCameraEye() },
+      dragmode: 'orbit'
+    }
+  };
+
+  Plotly.newPlot('mode-plot', [surfaceTrace, marker], layout, { responsive: true, displayModeBar: false });
+}
+
+function generateSurfaceMatrices(surface, amplitude = 1) {
+  const radius = state.params.radius;
+  const thetaVals = state.thetaVals;
+  const axialVals = state.axialVals;
+  const xMatrix = [];
+  const yMatrix = [];
+  const colorMatrix = [];
+
+  for (let i = 0; i < thetaVals.length; i++) {
+    const theta = thetaVals[i];
+    const xRow = [];
+    const yRow = [];
+    const colorRow = [];
+    for (let j = 0; j < axialVals.length; j++) {
+      const defl = surface[j][i] * state.heightScale * amplitude;
+      const r = radius + defl;
+      xRow.push(r * Math.cos(theta));
+      yRow.push(r * Math.sin(theta));
+      colorRow.push(defl);
+    }
+    xMatrix.push(xRow);
+    yMatrix.push(yRow);
+    colorMatrix.push(colorRow);
+  }
+
+  return { xMatrix, yMatrix, colorMatrix };
+}
+
+function buildZMatrix(axialVals, thetaCount) {
+  return Array.from({ length: thetaCount }, () => axialVals.slice());
+}
+
+function buildCustomData(thetaVals, axialVals) {
+  const custom = [];
+  for (let i = 0; i < thetaVals.length; i++) {
+    const theta = thetaVals[i];
+    const row = [];
+    for (let j = 0; j < axialVals.length; j++) {
+      row.push([theta, axialVals[j]]);
+    }
+    custom.push(row);
+  }
+  return custom;
+}
+
+function sampleDisplay(surface, thetaNorm, axialNorm) {
+  const maxThetaIdx = THETA_POINTS - 1;
+  const maxAxialIdx = AXIAL_POINTS - 1;
+  const thetaPos = thetaNorm * maxThetaIdx;
+  const axialPos = axialNorm * maxAxialIdx;
+  const i0 = Math.floor(thetaPos);
+  const j0 = Math.floor(axialPos);
+  const i1 = Math.min(i0 + 1, maxThetaIdx);
+  const j1 = Math.min(j0 + 1, maxAxialIdx);
+  const ti = thetaPos - i0;
+  const uj = axialPos - j0;
+  const v00 = surface[j0][i0];
+  const v10 = surface[j0][i1];
+  const v01 = surface[j1][i0];
+  const v11 = surface[j1][i1];
+  const v0 = v00 * (1 - ti) + v10 * ti;
+  const v1 = v01 * (1 - ti) + v11 * ti;
+  return v0 * (1 - uj) + v1 * uj;
+}
+
+function computeDriveMarker(mode, amplitude = 1) {
+  const theta = state.driveTheta * 2 * Math.PI;
+  const z = state.params.length * state.driveAxial;
+  const surface = mode.display;
+  const deflNorm = sampleDisplay(surface, state.driveTheta, state.driveAxial);
+  const defl = deflNorm * state.heightScale * amplitude;
+  const r = state.params.radius + defl;
+  return {
+    type: 'scatter3d',
+    mode: 'markers',
+    x: [r * Math.cos(theta)],
+    y: [r * Math.sin(theta)],
+    z: [z],
+    marker: { color: COLORS.drive, size: 8, symbol: 'x', line: { color: '#091227', width: 1.4 } },
+    hoverinfo: 'skip'
+  };
+}
+
+function buildMobilityPlot(mobility, params) {
+  if (window.Plotly && document.getElementById('mobility-plot')) {
+    Plotly.purge('mobility-plot');
+  }
+
+  const traceMob = {
+    x: mobility.freqAxis,
+    y: mobility.mobilityMag,
+    mode: 'lines',
+    line: { color: COLORS.mobility, width: 2 },
+    name: 'Mobility'
+  };
+
+  const tracePeaks = {
+    x: mobility.peaks.map(p => p.freq),
+    y: mobility.peaks.map(p => p.value),
+    mode: 'markers',
+    marker: { color: COLORS.peaks, size: 8, symbol: 'triangle-up' },
+    name: 'Resonance estimate'
+  };
+
+  const traces = [traceMob, tracePeaks];
+  if (state.showInfinite && mobility.infinite) {
+    traces.push({
+      x: mobility.freqAxis,
+      y: mobility.infinite,
+      mode: 'lines',
+      line: { color: COLORS.infinite, width: 2, dash: 'dot' },
+      name: 'Infinite cylinder |Y|'
+    });
+  }
+
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 70, r: 20, t: 10, b: 50 },
+    xaxis: {
+      type: 'log',
+      title: 'Frequency [Hz]',
+      showgrid: true,
+      gridcolor: 'rgba(255,255,255,0.06)'
+    },
+    yaxis: {
+      type: 'log',
+      title: 'Mobility |Y| [m/(N·s)]',
+      showgrid: true,
+      gridcolor: 'rgba(255,255,255,0.06)'
+    },
+    legend: { orientation: 'h', y: -0.25, x: 0.05 }
+  };
+
+  Plotly.newPlot('mobility-plot', traces, layout, { responsive: true, displayModeBar: false });
+}
+
+function updateDerivedPanel(data, params) {
+  const container = document.getElementById('derived');
+  const mat = MATERIALS[params.materialKey] || MATERIALS.aluminum;
+  const first = data.modes[0];
+  const last = data.modes[data.modes.length - 1];
+  const D = mat ? mat.young * Math.pow(params.thickness, 3) / (12 * (1 - mat.nu * mat.nu)) : 0;
+  const ringFreq = data.ringFreq;
+  container.innerHTML = `
+    <div>Material: ${mat.label}</div>
+    <div>E = ${formatNumber(mat.young / 1e9, 4)} GPa</div>
+    <div>ν = ${formatNumber(mat.nu, 3)}</div>
+    <div>ρ = ${formatNumber(mat.density, 4)} kg/m³</div>
+    <div>B = ${formatNumber(D, 4)} N·m</div>
+    <div>Area = ${formatNumber(data.area, 4)} m²</div>
+    <div>Total mass ≈ ${formatNumber(data.mass, 4)} kg</div>
+    <div>f₁ ≈ ${formatNumber(first.freq, 4)} Hz</div>
+    <div>fₙ ≈ ${formatNumber(last.freq, 4)} Hz</div>
+    <div>Ring frequency ≈ ${formatNumber(ringFreq, 4)} Hz</div>
+    <div>Drive (θ/2π, z/L) = (${formatNumber(state.driveTheta, 3)}, ${formatNumber(state.driveAxial, 3)})</div>
+  `;
+}
+
+function formatNumber(value, digits = 3) {
+  if (!Number.isFinite(value)) return '—';
+  const absVal = Math.abs(value);
+  if (absVal >= 1000 || absVal < 0.01) {
+    return value.toExponential(digits - 1);
+  }
+  return value.toFixed(digits);
+}
+
+function updatePlots() {
+  const rawInputs = readInputs();
+  document.getElementById('mode-index').value = rawInputs.activeMode;
+  state.params = rawInputs;
+  state.activeMode = rawInputs.activeMode;
+  state.driveTheta = rawInputs.driveTheta;
+  state.driveAxial = rawInputs.driveAxial;
+  state.animate = rawInputs.animate;
+  state.showInfinite = rawInputs.showInfinite;
+
+  const cylinder = computeCylinderModes(rawInputs);
+  state.modes = cylinder.modes;
+  state.thetaVals = cylinder.thetaVals;
+  state.axialVals = cylinder.axialVals;
+
+  updateDerivedPanel(cylinder, rawInputs);
+  document.getElementById('mode-index').max = cylinder.modes.length;
+
+  const mobility = computeMobility(cylinder.modes, rawInputs);
+  buildModePlot(cylinder);
+  buildMobilityPlot(mobility, rawInputs);
+  setupInteractions();
+  startAnimation();
+  applyCamera();
+}
+
+function setupInteractions() {
+  const modePlot = document.getElementById('mode-plot');
+  if (!modePlot || state.listenerAttached) return;
+
+  modePlot.on('plotly_click', evt => {
+    if (!evt || !evt.points || !evt.points.length) return;
+    const { x, y, z } = evt.points[0];
+    const theta = (Math.atan2(y, x) + 2 * Math.PI) % (2 * Math.PI);
+    const zNorm = Math.min(Math.max(z / state.params.length, 0), 1);
+    const thetaNorm = theta / (2 * Math.PI);
+    document.getElementById('drive-theta').value = thetaNorm;
+    document.getElementById('drive-axial').value = zNorm;
+    state.driveTheta = thetaNorm;
+    state.driveAxial = zNorm;
+    updatePlots();
+  });
+
+  modePlot.on('plotly_relayout', evt => {
+    if (!evt || state.updatingCamera) return;
+    const eye = extractEye(evt);
+    if (!eye) return;
+    updateCameraStateFromEye(eye);
+  });
+
+  state.listenerAttached = true;
+}
+
+function startAnimation() {
+  if (state.animationHandle) {
+    cancelAnimationFrame(state.animationHandle);
+    state.animationHandle = null;
+  }
+
+  const modePlot = document.getElementById('mode-plot');
+  if (!modePlot || !state.modes.length) return;
+  const activeIdx = state.activeMode - 1;
+  const active = state.modes[activeIdx];
+  if (!active) return;
+
+  const updateFrame = (amp) => {
+    const { xMatrix, yMatrix, colorMatrix } = generateSurfaceMatrices(active.display, amp);
+    const marker = computeDriveMarker(active, amp);
+    Plotly.restyle('mode-plot', {
+      x: [xMatrix],
+      y: [yMatrix],
+      surfacecolor: [colorMatrix]
+    }, [0]);
+    Plotly.restyle('mode-plot', {
+      x: [marker.x],
+      y: [marker.y],
+      z: [marker.z]
+    }, [1]);
+  };
+
+  if (!state.animate) {
+    updateFrame(1);
+    return;
+  }
+
+  const animateStep = () => {
+    state.phase += 0.08;
+    const amp = 0.8 * Math.sin(state.phase);
+    updateFrame(amp);
+    if (state.animate) {
+      state.animationHandle = requestAnimationFrame(animateStep);
+    }
+  };
+
+  state.animationHandle = requestAnimationFrame(animateStep);
+}
+
+function applyCamera() {
+  const modePlot = document.getElementById('mode-plot');
+  if (!modePlot || !window.Plotly) return;
+  state.updatingCamera = true;
+  const promise = Plotly.relayout('mode-plot', { 'scene.camera.eye': computeCameraEye() });
+  if (promise && typeof promise.then === 'function') {
+    promise.then(() => { state.updatingCamera = false; }, () => { state.updatingCamera = false; });
+  } else {
+    state.updatingCamera = false;
+  }
+}
+
+function extractEye(relayoutEvent) {
+  if (!relayoutEvent) return null;
+  if (relayoutEvent['scene.camera.eye']) return relayoutEvent['scene.camera.eye'];
+  const eye = {};
+  let found = false;
+  ['x', 'y', 'z'].forEach(axis => {
+    const key = `scene.camera.eye.${axis}`;
+    if (Object.prototype.hasOwnProperty.call(relayoutEvent, key)) {
+      eye[axis] = relayoutEvent[key];
+      found = true;
+    }
+  });
+  return found ? eye : null;
+}
+
+function updateCameraStateFromEye(eye) {
+  const { x = 0, y = 0, z = 1 } = eye;
+  const radius = Math.sqrt(x * x + y * y + z * z) || 1;
+  const azimuth = (Math.atan2(y, x) * 180) / Math.PI;
+  const elevation = (Math.asin(z / radius) * 180) / Math.PI;
+  state.azimuthDeg = (azimuth + 360) % 360;
+  state.elevationDeg = Math.min(90, Math.max(0, elevation));
+  if (state.baseRadius > 0) {
+    const zoom = Math.max(50, Math.min(180, state.baseRadius * 100 / radius));
+    state.zoomPercent = zoom;
+    const zoomControl = document.getElementById('view-zoom');
+    if (zoomControl) zoomControl.value = Math.round(zoom);
+  }
+  const azControl = document.getElementById('view-azimuth');
+  const elControl = document.getElementById('view-elevation');
+  if (azControl) azControl.value = Math.round(state.azimuthDeg);
+  if (elControl) elControl.value = Math.round(state.elevationDeg);
+}
+
+function degToRad(deg) {
+  return (deg * Math.PI) / 180;
+}
+
+function computeCameraEye(overrides = {}) {
+  const zoom = overrides.zoomPercent ?? state.zoomPercent ?? 100;
+  const baseRadius = overrides.baseRadius ?? state.baseRadius ?? 1.6;
+  const radius = baseRadius * (100 / Math.max(zoom, 1));
+  const azimuth = degToRad(overrides.azimuthDeg ?? state.azimuthDeg ?? 0);
+  const elevation = degToRad(overrides.elevationDeg ?? state.elevationDeg ?? 60);
+  const cosEl = Math.cos(elevation);
+  const sinEl = Math.sin(elevation);
+  return {
+    x: radius * cosEl * Math.cos(azimuth),
+    y: radius * cosEl * Math.sin(azimuth),
+    z: radius * sinEl
+  };
+}
+
+function formatAngle(value) {
+  return ((value % 360) + 360) % 360;
+}
+
+function resetDefaults() {
+  document.getElementById('length').value = 1.2;
+  document.getElementById('radius').value = 0.2;
+  document.getElementById('thickness').value = 0.006;
+  document.getElementById('material').value = 'aluminum';
+  document.getElementById('damping').value = 0.8;
+  document.getElementById('mode-index').value = 1;
+  document.getElementById('drive-theta').value = 0.25;
+  document.getElementById('drive-axial').value = 0.4;
+  document.getElementById('animate').checked = true;
+  document.getElementById('show-infinite').checked = true;
+  document.getElementById('view-azimuth').value = 225;
+  document.getElementById('view-elevation').value = 55;
+  document.getElementById('view-zoom').value = 100;
+  state.azimuthDeg = 225;
+  state.elevationDeg = 55;
+  state.zoomPercent = 100;
+  state.showInfinite = true;
+  updatePlots();
+}
+
+['length','radius','thickness','material','damping','mode-index','animate','show-infinite'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    updatePlots();
+  });
+});
+
+document.getElementById('drive-theta').addEventListener('input', () => {
+  updatePlots();
+});
+
+document.getElementById('drive-axial').addEventListener('input', () => {
+  updatePlots();
+});
+
+document.getElementById('view-azimuth').addEventListener('input', evt => {
+  const wrapped = formatAngle(parseFloat(evt.target.value) || 0);
+  state.azimuthDeg = wrapped;
+  evt.target.value = wrapped;
+  applyCamera();
+});
+
+document.getElementById('view-elevation').addEventListener('input', evt => {
+  const val = Math.max(0, Math.min(90, parseFloat(evt.target.value)));
+  state.elevationDeg = val;
+  evt.target.value = val;
+  applyCamera();
+});
+
+document.getElementById('view-zoom').addEventListener('input', evt => {
+  const val = Math.max(50, Math.min(180, parseFloat(evt.target.value)));
+  state.zoomPercent = val;
+  evt.target.value = val;
+  applyCamera();
+});
+
+document.getElementById('view-reset').addEventListener('click', () => {
+  state.azimuthDeg = 0;
+  state.elevationDeg = 88;
+  state.zoomPercent = 100;
+  if (state.params) {
+    const radius = state.params.radius;
+    state.baseRadius = Math.max(
+      radius * 4.5,
+      radius + state.heightScale * 6,
+      state.params.length * 0.8,
+      0.5
+    );
+  }
+  document.getElementById('view-azimuth').value = state.azimuthDeg;
+  document.getElementById('view-elevation').value = state.elevationDeg;
+  document.getElementById('view-zoom').value = state.zoomPercent;
+  applyCamera();
+});
+
+document.getElementById('update').addEventListener('click', updatePlots);
+document.getElementById('reset').addEventListener('click', resetDefaults);
+
+document.getElementById('show-infinite').addEventListener('change', () => {
+  state.showInfinite = document.getElementById('show-infinite').checked;
+  const mobility = computeMobility(state.modes, state.params);
+  buildMobilityPlot(mobility, state.params);
+});
+
+window.addEventListener('DOMContentLoaded', () => {
+  updatePlots();
+});
+
+window.addEventListener('resize', () => {
+  if (!window.Plotly) return;
+  ['mode-plot', 'mobility-plot'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      Plotly.Plots.resize(el);
+    }
+  });
+});
+</script>
+</body>
+</html>
