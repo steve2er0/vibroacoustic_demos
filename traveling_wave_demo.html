@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Traveling Wave Explorer</title>
+<style>
+  :root { --bg:#050912; --card:#101b2f; --ink:#f2f6ff; --muted:#96a4c5; --accent:#5ea4ff; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--ink); line-height:1.45; }
+  .wrap { max-width:1100px; margin:20px auto 40px; padding:0 clamp(18px,4vw,32px); }
+  .title { font-size:clamp(26px,4vw,36px); font-weight:700; margin-bottom:8px; }
+  .subtitle { color:var(--muted); margin-bottom:26px; max-width:860px; line-height:1.6; font-size:clamp(14px,2vw,16px); }
+  .grid { display:grid; grid-template-columns:minmax(260px,340px) minmax(0,1fr); gap:20px; align-items:start; }
+  .panel { background:var(--card); border-radius:18px; padding:22px; box-shadow:0 10px 28px rgba(0,0,0,.28); }
+  .panel h2 { font-size:15px; margin:0 0 12px; color:var(--accent); letter-spacing:.3px; }
+  .row { display:flex; flex-direction:column; gap:8px; margin:12px 0; }
+  .row label { color:var(--muted); font-size:13px; }
+  .row input[type="number"], .row select { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #26324a; background:#0a1328; color:var(--ink); box-sizing:border-box; }
+  .row input[type="range"] { width:100%; }
+  .toggle { flex-direction:row; align-items:center; justify-content:flex-start; gap:10px; }
+  .btn { background:var(--accent); color:#061223; border:none; padding:10px 14px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .15s ease; }
+  .btn.alt { background:#8bd6ff; color:#061223; }
+  .btn.small { padding:8px 12px; font-size:12px; }
+  .btn:active { transform:translateY(1px); }
+  .nums { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-top:14px; }
+  .nums div { background:#0a1328; border:1px solid #24314a; border-radius:12px; padding:10px; font-size:12px; }
+  canvas { width:100%; height:auto; display:block; border-radius:16px; background:radial-gradient(circle at top, rgba(255,255,255,0.05), rgba(0,0,0,0.4)); }
+  .legend { color:var(--muted); font-size:12px; margin-top:10px; }
+  @media (min-width:760px) {
+    .row { flex-direction:row; align-items:center; justify-content:space-between; }
+    .row label { flex:1; font-size:14px; }
+    .row input[type="number"], .row select { flex:0 0 150px; }
+    .row button { width:auto; }
+  }
+  @media (max-width:760px) {
+    .panel { padding:20px 18px; }
+    .grid { grid-template-columns:1fr; }
+  }
+  @media (max-width:520px) {
+    .wrap { margin:16px auto 32px; }
+    .panel { padding:18px 16px; }
+    .btn { width:100%; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">Traveling Wave Explorer</div>
+  <div class="subtitle">
+    Animate a unity-amplitude sinusoidal disturbance propagating through space and time. Select a medium and temperature to see how the wave speed (and wavelength) shift with conditions. Toggle particle markers to watch local points oscillate while the phase travels.
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Wave Parameters</h2>
+      <div class="row">
+        <label for="wavelength">Wavelength λ [m]</label>
+        <input id="wavelength" type="number" min="0.1" step="0.05" value="2.5" />
+      </div>
+      <div class="row">
+        <label for="frequency">Frequency f [Hz]</label>
+        <input id="frequency" type="number" min="0.05" step="0.05" value="0.6" />
+      </div>
+      <div class="row">
+        <label for="medium">Medium</label>
+        <select id="medium">
+          <option value="air" selected>Air</option>
+          <option value="water">Water</option>
+        </select>
+      </div>
+      <div class="row" id="temperature-row">
+        <label for="temperature">Temperature [°C]</label>
+        <input id="temperature" type="number" min="-10" max="40" step="1" value="20" />
+      </div>
+      <div class="row">
+        <label for="direction">Direction</label>
+        <select id="direction">
+          <option value="1" selected>+x (left → right)</option>
+          <option value="-1">-x (right → left)</option>
+        </select>
+      </div>
+      <div class="row toggle">
+        <input type="checkbox" id="markers" checked />
+        <label for="markers">Show particle markers</label>
+      </div>
+      <div class="row">
+        <label for="speed-mult">Time scaling</label>
+        <input id="speed-mult" type="range" min="0.2" max="3" step="0.1" value="1" />
+      </div>
+      <div class="row" style="margin-top:16px;">
+        <button id="play-pause" class="btn">Pause</button>
+        <button id="reset" class="btn alt">Reset</button>
+      </div>
+
+      <h2>Derived</h2>
+      <div class="nums" id="derived"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Wave Visualization</h2>
+      <canvas id="wave-canvas"></canvas>
+      <div class="legend" id="legend">Traveling wave y(x,t) = sin(kx − ωt), c = 343.000 m/s</div>
+      <canvas id="speed-canvas" style="margin-top:18px;"></canvas>
+      <div class="legend" id="speed-legend">Sound speed vs temperature</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const MEDIUM_SPEEDS = {
+  air: 343,
+  water: 1480
+};
+
+const state = {
+  amplitude: 1,
+  wavelength: 2.5,
+  frequency: 0.6,
+  direction: 1,
+  showMarkers: true,
+  speedMult: 1,
+  running: true,
+  lastTimestamp: 0,
+  phase: 0,
+  medium: 'air',
+  temperature: 20,
+  waveSpeed: MEDIUM_SPEEDS.air
+};
+
+const canvas = document.getElementById('wave-canvas');
+const ctx = canvas.getContext('2d');
+const speedCanvas = document.getElementById('speed-canvas');
+const speedCtx = speedCanvas.getContext('2d');
+const derivedEl = document.getElementById('derived');
+const legendEl = document.getElementById('legend');
+const speedLegendEl = document.getElementById('speed-legend');
+
+const controls = {
+  wavelength: document.getElementById('wavelength'),
+  frequency: document.getElementById('frequency'),
+  direction: document.getElementById('direction'),
+  medium: document.getElementById('medium'),
+  temperature: document.getElementById('temperature'),
+  markers: document.getElementById('markers'),
+  speedMult: document.getElementById('speed-mult'),
+  playPause: document.getElementById('play-pause'),
+  reset: document.getElementById('reset')
+};
+
+function resizeCanvas() {
+  const ratio = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth;
+  const height = 380;
+  canvas.style.height = height + 'px';
+  canvas.width = width * ratio;
+  canvas.height = height * ratio;
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+
+  const speedHeight = 160;
+  speedCanvas.style.height = speedHeight + 'px';
+  speedCanvas.width = width * ratio;
+  speedCanvas.height = speedHeight * ratio;
+  speedCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
+}
+
+function readControls() {
+  state.frequency = Math.max(parseFloat(controls.frequency.value) || 0.05, 0.05);
+  state.direction = parseFloat(controls.direction.value) >= 0 ? 1 : -1;
+  state.medium = controls.medium.value;
+  state.temperature = clamp(parseFloat(controls.temperature.value), -10, 40, 20);
+  controls.temperature.value = state.temperature;
+  state.waveSpeed = computeSpeed(state.medium, state.temperature);
+  state.wavelength = state.waveSpeed / state.frequency;
+  controls.wavelength.value = state.wavelength.toFixed(3);
+  state.showMarkers = controls.markers.checked;
+  state.speedMult = Math.max(parseFloat(controls.speedMult.value) || 0.2, 0.2);
+  updateDerived();
+}
+
+function updateDerived() {
+  const k = (2 * Math.PI) / state.wavelength;
+  const omega = 2 * Math.PI * state.frequency;
+  const phaseVelocity = omega / k;
+  const period = 1 / state.frequency;
+  derivedEl.innerHTML = `
+    <div>Wave number k = ${formatNumber(k, 4)} rad/m</div>
+    <div>Angular frequency ω = ${formatNumber(omega, 4)} rad/s</div>
+    <div>Phase velocity c = ${formatNumber(state.waveSpeed, 4)} m/s</div>
+    <div>Period T = ${formatNumber(period, 4)} s</div>
+    <div>Temperature = ${formatNumber(state.temperature, 2)} °C (${state.medium})</div>
+  `;
+  legendEl.textContent = `Traveling wave y(x,t) = sin(kx − ωt), c = ${formatNumber(state.waveSpeed, 3)} m/s`;
+  drawSpeedCurve();
+}
+
+function drawSpeedCurve() {
+  const width = speedCanvas.clientWidth;
+  const height = parseFloat(speedCanvas.style.height || '160');
+  speedCtx.clearRect(0, 0, width, height);
+
+  const tempMin = -10;
+  const tempMax = 40;
+  const samples = 200;
+  const speeds = [];
+  let speedMin = Infinity;
+  let speedMax = -Infinity;
+
+  for (let i = 0; i <= samples; i++) {
+    const t = tempMin + (i / samples) * (tempMax - tempMin);
+    const c = computeSpeed(state.medium, t);
+    speeds.push({ t, c });
+    speedMin = Math.min(speedMin, c);
+    speedMax = Math.max(speedMax, c);
+  }
+
+  const margin = 40;
+  const usableWidth = width - margin * 2;
+  const usableHeight = height - margin * 2;
+
+  if (speedMax - speedMin < 1e-6) {
+    speedMin -= 1;
+    speedMax += 1;
+  }
+
+  // Axes
+  speedCtx.strokeStyle = 'rgba(255,255,255,0.15)';
+  speedCtx.lineWidth = 1;
+  speedCtx.beginPath();
+  speedCtx.moveTo(margin, margin);
+  speedCtx.lineTo(margin, height - margin);
+  speedCtx.lineTo(width - margin, height - margin);
+  speedCtx.stroke();
+
+  // Curve
+  speedCtx.strokeStyle = '#8bd6ff';
+  speedCtx.lineWidth = 2;
+  speedCtx.beginPath();
+  speeds.forEach((pt, idx) => {
+    const x = margin + ((pt.t - tempMin) / (tempMax - tempMin)) * usableWidth;
+    const y = height - margin - ((pt.c - speedMin) / (speedMax - speedMin)) * usableHeight;
+    if (idx === 0) speedCtx.moveTo(x, y);
+    else speedCtx.lineTo(x, y);
+  });
+  speedCtx.stroke();
+
+  // Current temperature marker
+  const currentX = margin + ((state.temperature - tempMin) / (tempMax - tempMin)) * usableWidth;
+  const currentC = computeSpeed(state.medium, state.temperature);
+  const denom = speedMax - speedMin || 1;
+  const currentY = height - margin - ((currentC - speedMin) / denom) * usableHeight;
+  speedCtx.fillStyle = '#ffd166';
+  speedCtx.beginPath();
+  speedCtx.arc(currentX, currentY, 5, 0, Math.PI * 2);
+  speedCtx.fill();
+
+  speedCtx.fillStyle = 'rgba(255,255,255,0.7)';
+  speedCtx.font = '12px system-ui';
+  speedCtx.fillText(`Temperature: ${formatNumber(state.temperature, 2)} °C`, margin, margin - 10);
+  speedCtx.fillText(`Speed: ${formatNumber(currentC, 3)} m/s`, margin, margin + 6);
+
+  speedLegendEl.textContent = `Sound speed in ${state.medium} vs temperature (°C)`;
+}
+
+function clamp(value, min, max, fallback) {
+  const v = Number.isFinite(value) ? value : fallback;
+  return Math.min(max, Math.max(min, v));
+}
+
+function computeSpeed(medium, temperatureC) {
+  if (medium === 'water') {
+    // Approximate freshwater speed of sound vs temperature (m/s)
+    const T = temperatureC;
+    return 1402.388 + 5.03830 * T - 0.0580852 * T * T + 0.000334719 * T * T * T;
+  }
+  // Air (ideal gas, ~20% humidity) approximation
+  const T = temperatureC;
+  return 331.3 + 0.606 * T;
+}
+
+function formatNumber(value, digits = 3) {
+  if (!Number.isFinite(value)) return '—';
+  const absVal = Math.abs(value);
+  if (absVal >= 1000 || absVal < 0.01) {
+    return value.toExponential(digits - 1);
+  }
+  return value.toFixed(digits);
+}
+
+function drawFrame(timestamp) {
+  if (!state.lastTimestamp) state.lastTimestamp = timestamp;
+  const dt = (timestamp - state.lastTimestamp) / 1000;
+  state.lastTimestamp = timestamp;
+  if (state.running) {
+    state.phase += dt * state.speedMult;
+  }
+
+  const width = canvas.clientWidth;
+  const height = parseFloat(canvas.style.height);
+  ctx.clearRect(0, 0, width, height);
+
+  // Axes
+  const margin = 40;
+  const usableWidth = width - margin * 2;
+  const usableHeight = height - margin * 2;
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(margin, height - margin);
+  ctx.lineTo(width - margin, height - margin);
+  ctx.stroke();
+
+  // Wave path
+  const samples = 300;
+  const k = (2 * Math.PI) / state.wavelength;
+  const omega = 2 * Math.PI * state.frequency;
+  const xMin = 0;
+  const xMax = state.wavelength * 2;
+
+  ctx.beginPath();
+  for (let i = 0; i <= samples; i++) {
+    const xNorm = i / samples;
+    const x = xMin + xNorm * (xMax - xMin);
+    const y = Math.sin(k * x - state.direction * omega * state.phase);
+    const px = margin + xNorm * usableWidth;
+    const py = height / 2 - y * (usableHeight * 0.45);
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.strokeStyle = '#5ea4ff';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Particle markers
+  if (state.showMarkers) {
+    const markerCount = 20;
+    ctx.fillStyle = '#ffd166';
+    for (let i = 0; i < markerCount; i++) {
+      const xNorm = i / (markerCount - 1);
+      const x = xMin + xNorm * (xMax - xMin);
+      const y = Math.sin(k * x - state.direction * omega * state.phase);
+      const px = margin + xNorm * usableWidth;
+      const py = height / 2 - y * (usableHeight * 0.45);
+      ctx.beginPath();
+      ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Time indicator
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.font = '12px system-ui';
+  ctx.fillText(`t = ${formatNumber(state.phase, 3)} s`, margin, margin - 12);
+
+  window.requestAnimationFrame(drawFrame);
+}
+
+controls.wavelength.addEventListener('input', () => { readControls(); });
+controls.frequency.addEventListener('input', () => { readControls(); });
+controls.direction.addEventListener('change', () => { readControls(); });
+controls.medium.addEventListener('change', () => { readControls(); });
+controls.temperature.addEventListener('input', () => { readControls(); });
+controls.markers.addEventListener('change', () => { readControls(); });
+controls.speedMult.addEventListener('input', () => { readControls(); });
+
+controls.playPause.addEventListener('click', () => {
+  state.running = !state.running;
+  controls.playPause.textContent = state.running ? 'Pause' : 'Play';
+});
+
+controls.reset.addEventListener('click', () => {
+  state.phase = 0;
+  state.running = true;
+  controls.playPause.textContent = 'Pause';
+  controls.wavelength.value = 2.5;
+  controls.frequency.value = 0.6;
+  controls.medium.value = 'air';
+  controls.temperature.value = 20;
+  controls.direction.value = '1';
+  controls.markers.checked = true;
+  controls.speedMult.value = 1;
+  readControls();
+});
+
+window.addEventListener('resize', () => {
+  resizeCanvas();
+});
+
+resizeCanvas();
+readControls();
+window.requestAnimationFrame(drawFrame);
+</script>
+</body>
+</html>
