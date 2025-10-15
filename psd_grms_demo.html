@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PSD & g-RMS Calculator</title>
+<style>
+  :root { --bg:#050912; --card:#101b2f; --ink:#f2f6ff; --muted:#96a4c5; --accent:#5ea4ff; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--ink); line-height:1.45; }
+  .wrap { max-width:1200px; margin:20px auto 40px; padding:0 clamp(18px,4vw,32px); }
+  .title { font-size:clamp(26px,4vw,36px); font-weight:700; margin-bottom:8px; }
+  .subtitle { color:var(--muted); margin-bottom:26px; max-width:860px; line-height:1.6; font-size:clamp(14px,2vw,16px); }
+  .grid { display:grid; grid-template-columns:minmax(280px,380px) minmax(0,1fr); gap:20px; align-items:start; }
+  .panel { background:var(--card); border-radius:18px; padding:22px; box-shadow:0 10px 28px rgba(0,0,0,.28); }
+  .panel h2 { font-size:15px; margin:0 0 12px; color:var(--accent); letter-spacing:.3px; }
+  .row { display:flex; flex-direction:column; gap:8px; margin:12px 0; }
+  .row label { color:var(--muted); font-size:13px; }
+  .row input[type="number"] { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #26324a; background:#0a1328; color:var(--ink); box-sizing:border-box; }
+  .btn { background:var(--accent); color:#061223; border:none; padding:10px 14px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .15s ease; }
+  .btn.alt { background:#8bd6ff; color:#061223; }
+  .btn.danger { background:#ff6b6b; color:#fff; }
+  .btn.small { padding:8px 12px; font-size:12px; }
+  .btn:active { transform:translateY(1px); }
+  .btn:disabled { opacity:0.5; cursor:not-allowed; }
+  .nums { display:grid; grid-template-columns:1fr; gap:10px; margin-top:14px; }
+  .nums div { background:#0a1328; border:1px solid #24314a; border-radius:12px; padding:12px; font-size:13px; }
+  .nums .big { font-size:18px; font-weight:700; color:var(--accent); }
+  canvas { width:100%; height:auto; display:block; border-radius:16px; background:radial-gradient(circle at top, rgba(255,255,255,0.05), rgba(0,0,0,0.4)); }
+  .legend { color:var(--muted); font-size:12px; margin-top:10px; }
+  .breakpoint-list { max-height:340px; overflow-y:auto; }
+  .breakpoint-item { background:#0a1328; border:1px solid #26324a; border-radius:12px; padding:12px; margin-bottom:10px; display:grid; grid-template-columns:1fr 1fr auto; gap:10px; align-items:center; }
+  .breakpoint-item input { padding:8px 10px; }
+  .breakpoint-item label { font-size:11px; margin-bottom:4px; display:block; }
+  .breakpoint-item .field { display:flex; flex-direction:column; }
+  .action-row { display:flex; gap:8px; margin-top:14px; }
+  .action-row button { flex:1; }
+  @media (min-width:760px) {
+    .row { flex-direction:row; align-items:center; justify-content:space-between; }
+    .row label { flex:1; font-size:14px; }
+    .row input[type="number"] { flex:0 0 150px; }
+  }
+  @media (max-width:760px) {
+    .panel { padding:20px 18px; }
+    .grid { grid-template-columns:1fr; }
+  }
+  @media (max-width:520px) {
+    .wrap { margin:16px auto 32px; }
+    .panel { padding:18px 16px; }
+    .btn { width:100%; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">PSD & g-RMS Calculator</div>
+  <div class="subtitle">
+    Define a Power Spectral Density (PSD) profile by entering frequency breakpoints and corresponding PSD values in g²/Hz. 
+    The calculator uses power law interpolation between breakpoints and computes the overall g-RMS value from the area under the PSD curve.
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>PSD Breakpoints</h2>
+      <div class="breakpoint-list" id="breakpoint-list"></div>
+      
+      <div class="action-row">
+        <button id="add-breakpoint" class="btn">Add Breakpoint</button>
+      </div>
+      
+      <div class="action-row">
+        <button id="load-example" class="btn alt small">Load Example</button>
+        <button id="clear-all" class="btn danger small">Clear All</button>
+      </div>
+
+      <h2>Results</h2>
+      <div class="nums" id="results">
+        <div><span class="big" id="grms-value">—</span><br/>g-RMS</div>
+        <div><span id="area-value">—</span><br/>Total Area (g²)</div>
+        <div><span id="freq-range-value">—</span><br/>Frequency Range (Hz)</div>
+        <div><span id="breakpoint-count">0</span><br/>Breakpoints</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>PSD Profile</h2>
+      <canvas id="psd-canvas"></canvas>
+      <div class="legend">Power Spectral Density (g²/Hz) vs Frequency (Hz)</div>
+      
+      <div style="margin-top:24px;">
+        <input type="checkbox" id="log-scale" checked />
+        <label for="log-scale" style="color:var(--muted); font-size:14px; margin-left:6px;">Log-log scale</label>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const state = {
+  breakpoints: [],
+  logScale: true
+};
+
+const canvas = document.getElementById('psd-canvas');
+const ctx = canvas.getContext('2d');
+const breakpointList = document.getElementById('breakpoint-list');
+const grmsValueEl = document.getElementById('grms-value');
+const areaValueEl = document.getElementById('area-value');
+const freqRangeValueEl = document.getElementById('freq-range-value');
+const breakpointCountEl = document.getElementById('breakpoint-count');
+
+function resizeCanvas() {
+  const ratio = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth;
+  const height = 420;
+  canvas.style.height = height + 'px';
+  canvas.width = width * ratio;
+  canvas.height = height * ratio;
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+}
+
+function addBreakpoint(freq = 20, psd = 0.01) {
+  const id = Date.now() + Math.random();
+  state.breakpoints.push({ id, freq, psd });
+  state.breakpoints.sort((a, b) => a.freq - b.freq);
+  renderBreakpoints();
+  calculate();
+  drawPlot();
+}
+
+function removeBreakpoint(id) {
+  state.breakpoints = state.breakpoints.filter(bp => bp.id !== id);
+  renderBreakpoints();
+  calculate();
+  drawPlot();
+}
+
+function updateBreakpoint(id, field, value) {
+  const bp = state.breakpoints.find(bp => bp.id === id);
+  if (bp) {
+    bp[field] = Math.max(parseFloat(value) || 0, 0);
+    state.breakpoints.sort((a, b) => a.freq - b.freq);
+    renderBreakpoints();
+    calculate();
+    drawPlot();
+  }
+}
+
+function renderBreakpoints() {
+  breakpointList.innerHTML = '';
+  state.breakpoints.forEach((bp, idx) => {
+    const item = document.createElement('div');
+    item.className = 'breakpoint-item';
+    item.innerHTML = `
+      <div class="field">
+        <label>Frequency (Hz)</label>
+        <input type="number" min="0" step="any" value="${bp.freq}" data-id="${bp.id}" data-field="freq" />
+      </div>
+      <div class="field">
+        <label>PSD (g²/Hz)</label>
+        <input type="number" min="0" step="any" value="${bp.psd}" data-id="${bp.id}" data-field="psd" />
+      </div>
+      <button class="btn danger small" data-id="${bp.id}" style="margin-top:18px;">×</button>
+    `;
+    breakpointList.appendChild(item);
+  });
+
+  // Add event listeners
+  breakpointList.querySelectorAll('input').forEach(input => {
+    input.addEventListener('input', (e) => {
+      updateBreakpoint(parseFloat(e.target.dataset.id), e.target.dataset.field, e.target.value);
+    });
+  });
+
+  breakpointList.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      removeBreakpoint(parseFloat(e.target.dataset.id));
+    });
+  });
+}
+
+function calculate() {
+  breakpointCountEl.textContent = state.breakpoints.length;
+
+  if (state.breakpoints.length < 2) {
+    grmsValueEl.textContent = '—';
+    areaValueEl.textContent = '—';
+    freqRangeValueEl.textContent = '—';
+    return;
+  }
+
+  // Calculate total area using power law interpolation
+  let totalArea = 0;
+
+  for (let i = 0; i < state.breakpoints.length - 1; i++) {
+    const bp1 = state.breakpoints[i];
+    const bp2 = state.breakpoints[i + 1];
+    
+    const f1 = bp1.freq;
+    const f2 = bp2.freq;
+    const psd1 = bp1.psd;
+    const psd2 = bp2.psd;
+
+    if (f1 <= 0 || f2 <= 0) continue;
+
+    // Power law: PSD(f) = psd1 * (f/f1)^n
+    // where n = log(psd2/psd1) / log(f2/f1)
+    
+    if (Math.abs(psd1) < 1e-20 && Math.abs(psd2) < 1e-20) {
+      // Both PSDs are essentially zero
+      continue;
+    } else if (Math.abs(psd1) < 1e-20) {
+      // psd1 is zero, use linear approximation from zero
+      totalArea += 0.5 * psd2 * (f2 - f1);
+    } else if (Math.abs(psd2) < 1e-20) {
+      // psd2 is zero, use linear approximation to zero
+      totalArea += 0.5 * psd1 * (f2 - f1);
+    } else if (Math.abs(Math.log(psd2 / psd1)) < 1e-10) {
+      // PSDs are essentially equal (constant)
+      totalArea += psd1 * (f2 - f1);
+    } else {
+      // Power law interpolation
+      const n = Math.log(psd2 / psd1) / Math.log(f2 / f1);
+      
+      if (Math.abs(n + 1) < 1e-10) {
+        // n ≈ -1, use logarithmic formula
+        totalArea += psd1 * f1 * Math.log(f2 / f1);
+      } else {
+        // General case
+        const area = (psd1 / Math.pow(f1, n)) * (Math.pow(f2, n + 1) - Math.pow(f1, n + 1)) / (n + 1);
+        totalArea += area;
+      }
+    }
+  }
+
+  const grms = Math.sqrt(totalArea);
+  const minFreq = state.breakpoints[0].freq;
+  const maxFreq = state.breakpoints[state.breakpoints.length - 1].freq;
+
+  grmsValueEl.textContent = formatNumber(grms, 4);
+  areaValueEl.textContent = formatNumber(totalArea, 4) + ' g²';
+  freqRangeValueEl.textContent = `${formatNumber(minFreq, 2)} – ${formatNumber(maxFreq, 2)} Hz`;
+}
+
+function drawPlot() {
+  const width = canvas.clientWidth;
+  const height = parseFloat(canvas.style.height);
+  ctx.clearRect(0, 0, width, height);
+
+  if (state.breakpoints.length < 2) {
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.font = '14px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('Add at least 2 breakpoints to see the plot', width / 2, height / 2);
+    return;
+  }
+
+  const margin = 60;
+  const usableWidth = width - margin * 2;
+  const usableHeight = height - margin * 2;
+
+  // Find data range
+  let fMin = Math.min(...state.breakpoints.map(bp => bp.freq));
+  let fMax = Math.max(...state.breakpoints.map(bp => bp.freq));
+  let psdMin = Math.min(...state.breakpoints.map(bp => bp.psd));
+  let psdMax = Math.max(...state.breakpoints.map(bp => bp.psd));
+
+  // Add some padding
+  if (state.logScale) {
+    if (fMin <= 0) fMin = 0.1;
+    if (psdMin <= 0) psdMin = 1e-6;
+    const fLogRange = Math.log10(fMax) - Math.log10(fMin);
+    const psdLogRange = Math.log10(psdMax) - Math.log10(psdMin);
+    fMin = Math.pow(10, Math.log10(fMin) - fLogRange * 0.05);
+    fMax = Math.pow(10, Math.log10(fMax) + fLogRange * 0.05);
+    psdMin = Math.pow(10, Math.log10(psdMin) - psdLogRange * 0.1);
+    psdMax = Math.pow(10, Math.log10(psdMax) + psdLogRange * 0.1);
+  } else {
+    const fRange = fMax - fMin;
+    const psdRange = psdMax - psdMin;
+    fMin -= fRange * 0.05;
+    fMax += fRange * 0.05;
+    psdMin -= psdRange * 0.1;
+    psdMax += psdRange * 0.1;
+    if (psdMin < 0) psdMin = 0;
+  }
+
+  // Transform functions
+  const xToCanvas = (f) => {
+    if (state.logScale) {
+      return margin + ((Math.log10(f) - Math.log10(fMin)) / (Math.log10(fMax) - Math.log10(fMin))) * usableWidth;
+    } else {
+      return margin + ((f - fMin) / (fMax - fMin)) * usableWidth;
+    }
+  };
+
+  const yToCanvas = (psd) => {
+    if (state.logScale) {
+      return height - margin - ((Math.log10(psd) - Math.log10(psdMin)) / (Math.log10(psdMax) - Math.log10(psdMin))) * usableHeight;
+    } else {
+      return height - margin - ((psd - psdMin) / (psdMax - psdMin)) * usableHeight;
+    }
+  };
+
+  // Draw grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  
+  // Vertical grid lines
+  const numVertLines = 5;
+  for (let i = 0; i <= numVertLines; i++) {
+    const x = margin + (i / numVertLines) * usableWidth;
+    ctx.beginPath();
+    ctx.moveTo(x, margin);
+    ctx.lineTo(x, height - margin);
+    ctx.stroke();
+  }
+
+  // Horizontal grid lines
+  const numHorizLines = 5;
+  for (let i = 0; i <= numHorizLines; i++) {
+    const y = margin + (i / numHorizLines) * usableHeight;
+    ctx.beginPath();
+    ctx.moveTo(margin, y);
+    ctx.lineTo(width - margin, y);
+    ctx.stroke();
+  }
+
+  // Draw axes
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(margin, margin);
+  ctx.lineTo(margin, height - margin);
+  ctx.lineTo(width - margin, height - margin);
+  ctx.stroke();
+
+  // Draw PSD curve using power law interpolation
+  ctx.strokeStyle = '#5ea4ff';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+
+  for (let i = 0; i < state.breakpoints.length - 1; i++) {
+    const bp1 = state.breakpoints[i];
+    const bp2 = state.breakpoints[i + 1];
+    
+    const f1 = bp1.freq;
+    const f2 = bp2.freq;
+    const psd1 = bp1.psd;
+    const psd2 = bp2.psd;
+
+    if (f1 <= 0 || f2 <= 0 || (state.logScale && (psd1 <= 0 || psd2 <= 0))) continue;
+
+    // Draw segment with power law
+    const samples = 50;
+    for (let j = 0; j <= samples; j++) {
+      let f, psd;
+      
+      if (state.logScale) {
+        const logF1 = Math.log10(f1);
+        const logF2 = Math.log10(f2);
+        f = Math.pow(10, logF1 + (j / samples) * (logF2 - logF1));
+      } else {
+        f = f1 + (j / samples) * (f2 - f1);
+      }
+
+      // Power law interpolation
+      if (Math.abs(psd1) < 1e-20 || Math.abs(psd2) < 1e-20) {
+        // Linear fallback
+        const t = (f - f1) / (f2 - f1);
+        psd = psd1 + t * (psd2 - psd1);
+      } else {
+        const n = Math.log(psd2 / psd1) / Math.log(f2 / f1);
+        psd = psd1 * Math.pow(f / f1, n);
+      }
+
+      if (psd <= 0 && state.logScale) psd = psdMin;
+
+      const x = xToCanvas(f);
+      const y = yToCanvas(psd);
+
+      if (i === 0 && j === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+  }
+  ctx.stroke();
+
+  // Draw breakpoint markers
+  ctx.fillStyle = '#ffd166';
+  state.breakpoints.forEach(bp => {
+    if (bp.freq <= 0 || (state.logScale && bp.psd <= 0)) return;
+    const x = xToCanvas(bp.freq);
+    const y = yToCanvas(bp.psd);
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Draw axis labels
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = '12px system-ui';
+  ctx.textAlign = 'center';
+
+  // X-axis labels
+  for (let i = 0; i <= numVertLines; i++) {
+    const t = i / numVertLines;
+    let f;
+    if (state.logScale) {
+      f = Math.pow(10, Math.log10(fMin) + t * (Math.log10(fMax) - Math.log10(fMin)));
+    } else {
+      f = fMin + t * (fMax - fMin);
+    }
+    const x = margin + t * usableWidth;
+    ctx.fillText(formatNumber(f, 2), x, height - margin + 20);
+  }
+
+  // Y-axis labels
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= numHorizLines; i++) {
+    const t = i / numHorizLines;
+    let psd;
+    if (state.logScale) {
+      psd = Math.pow(10, Math.log10(psdMax) - t * (Math.log10(psdMax) - Math.log10(psdMin)));
+    } else {
+      psd = psdMax - t * (psdMax - psdMin);
+    }
+    const y = margin + t * usableHeight;
+    ctx.fillText(formatNumber(psd, 3), margin - 10, y + 4);
+  }
+
+  // Axis titles
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.font = '13px system-ui';
+  ctx.fillText('Frequency (Hz)', width / 2, height - 5);
+  
+  ctx.save();
+  ctx.translate(15, height / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('PSD (g²/Hz)', 0, 0);
+  ctx.restore();
+}
+
+function formatNumber(value, digits = 3) {
+  if (!Number.isFinite(value)) return '—';
+  const absVal = Math.abs(value);
+  if (absVal >= 1000 || (absVal < 0.001 && absVal > 0)) {
+    return value.toExponential(digits - 1);
+  }
+  return value.toFixed(Math.min(digits, 4));
+}
+
+function loadExample() {
+  state.breakpoints = [];
+  // Typical random vibration profile
+  addBreakpoint(20, 0.001);
+  addBreakpoint(50, 0.02);
+  addBreakpoint(200, 0.04);
+  addBreakpoint(500, 0.04);
+  addBreakpoint(1000, 0.02);
+  addBreakpoint(2000, 0.001);
+}
+
+function clearAll() {
+  if (state.breakpoints.length > 0 && !confirm('Clear all breakpoints?')) return;
+  state.breakpoints = [];
+  renderBreakpoints();
+  calculate();
+  drawPlot();
+}
+
+document.getElementById('add-breakpoint').addEventListener('click', () => {
+  const lastFreq = state.breakpoints.length > 0 ? 
+    state.breakpoints[state.breakpoints.length - 1].freq : 0;
+  addBreakpoint(lastFreq + 100, 0.01);
+});
+
+document.getElementById('load-example').addEventListener('click', loadExample);
+document.getElementById('clear-all').addEventListener('click', clearAll);
+
+document.getElementById('log-scale').addEventListener('change', (e) => {
+  state.logScale = e.target.checked;
+  drawPlot();
+});
+
+window.addEventListener('resize', () => {
+  resizeCanvas();
+  drawPlot();
+});
+
+resizeCanvas();
+loadExample(); // Start with example data
+</script>
+</body>
+</html>
+
