@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+examples/data/*.csv
+examples/synthetic_data/*.csv
