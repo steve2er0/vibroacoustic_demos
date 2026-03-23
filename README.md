@@ -64,6 +64,65 @@ python3 examples/generate_synthetic_data.py
 
 Then in the GUI use `examples/data/mobility_Fx.csv` (and **Fy** / **Fz**) plus `flight_segment.csv`, window e.g. **0.5–3.5 s**.
 
+### MATLAB (flight CSV or per-channel MAT workflow)
+
+`matlab/reconstruct_forces_from_flight_data.m` is the preferred MATLAB entrypoint for the real pipeline. It loads the same **Fx/Fy/Fz mobility CSVs** as the Python app and accepts either:
+
+- A flight CSV: `time_s,ch0,ch1,...` in **g**
+- An ordered list of per-channel `.mat` files, one file per flight channel
+
+For `.mat` input, each file must contain exactly one structure with fields:
+
+- `amp`: acceleration samples in **g**
+- `t`: time vector in seconds
+- `sr`: sample rate in Hz
+
+The `.mat` file order must match the FRF sensor order.
+
+The MATLAB pipeline runs the same windowed frequency-by-frequency inversion and can optionally write:
+
+- `F_hat_spectrum.csv`
+- `reconstruction_diagnostics.csv`
+
+Example:
+
+```matlab
+opts = struct( ...
+    't_start', 0.5, ...
+    't_end', 3.5, ...
+    'fft_window', 'hann', ...
+    'tikhonov_lambda', 0.0, ...
+    'plot_results', true);
+
+[result, inputs] = reconstruct_forces_from_flight_data( ...
+    'mobility_Fx.csv', 'mobility_Fy.csv', 'mobility_Fz.csv', 'flight_segment.csv', opts);
+```
+
+Per-channel `.mat` example:
+
+```matlab
+flightMatFiles = {
+    'accel_ch01.mat'
+    'accel_ch02.mat'
+    'accel_ch03.mat'
+};
+
+[result, inputs] = reconstruct_forces_from_flight_data( ...
+    'mobility_Fx.csv', 'mobility_Fy.csv', 'mobility_Fz.csv', flightMatFiles, opts);
+```
+
+Repo-local runner:
+
+```matlab
+run('matlab/run_force_reconstruction_flight_example.m')
+```
+
+If you want the repo sample CSVs for MATLAB, generate them first with:
+
+```bash
+python3 examples/generate_synthetic_data.py
+```
+
 ### Tests
 
 ```bash
