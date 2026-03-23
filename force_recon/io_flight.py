@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from force_recon.flight_io import load_flight_data as _load_flight_data
+from force_recon.flight_io import load_flight_mat_files as _load_flight_mat_files
 from force_recon.units import G0_STANDARD, g_to_m_s2
 
 
@@ -28,6 +30,16 @@ def load_flight_csv(
         channel_columns = [c for c in df.columns if c != time_column]
     acc = df[channel_columns].to_numpy(dtype=float)
     return t, acc, channel_columns
+
+
+def load_flight_mat_files(paths):
+    """Compatibility wrapper for per-channel MAT flight inputs."""
+    return _load_flight_mat_files(paths)
+
+
+def load_flight_data(flight_input):
+    """Compatibility wrapper for CSV or per-channel MAT flight inputs."""
+    return _load_flight_data(flight_input)
 
 
 def slice_time(

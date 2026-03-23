@@ -24,8 +24,8 @@ import numpy as np
 
 from force_recon import frf_io, pipeline, units
 from force_recon.export_nastran import write_force_spectrum_csv
-from force_recon.flight_io import load_flight_csv
-from gui_file_dialogs import choose_open_file, choose_save_file
+from force_recon.flight_io import load_flight_data
+from gui_file_dialogs import choose_open_file, choose_open_files, choose_save_file
 from gui_plotting import draw_conditioning, draw_spectra
 
 
@@ -36,12 +36,24 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--pick",
         action="store_true",
-        help="Choose all four CSVs via native dialogs (macOS / Windows)",
+        help="Choose Fx/Fy/Fz CSVs and flight CSV/MAT files via native dialogs",
     )
     p.add_argument("--fx", type=Path, help="Mobility CSV unit Fx")
     p.add_argument("--fy", type=Path, help="Mobility CSV unit Fy")
     p.add_argument("--fz", type=Path, help="Mobility CSV unit Fz")
-    p.add_argument("--flight", type=Path, help="Flight CSV (time_s + channels in g)")
+    p.add_argument(
+        "--ones-h",
+        action="store_true",
+        help="Use a dummy mobility matrix H=1+0j derived from the flight timebase",
+    )
+    flight_group = p.add_mutually_exclusive_group()
+    flight_group.add_argument("--flight", type=Path, help="Flight CSV (time_s + channels in g)")
+    flight_group.add_argument(
+        "--flight-mat",
+        type=Path,
+        nargs="+",
+        help="Ordered per-channel MAT files with amp/t/sr fields",
+    )
     p.add_argument("--t0", type=float, default=0.0)
     p.add_argument("--t1", type=float, default=1.0)
     p.add_argument("--g0", type=float, default=units.G0_STANDARD)
@@ -51,27 +63,43 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--save", type=Path, help="Write F̂ CSV to this path and exit (no plot)")
     args = p.parse_args(argv)
 
-    fx, fy, fz, fl = args.fx, args.fy, args.fz, args.flight
+    fx, fy, fz = args.fx, args.fy, args.fz
+    flight_input: Path | list[Path] | None = args.flight if args.flight is not None else args.flight_mat
     if args.pick:
-        print("Choose Fx mobility CSV…")
-        fx = choose_open_file("Choose Fx mobility CSV")
-        print("Choose Fy mobility CSV…")
-        fy = choose_open_file("Choose Fy mobility CSV")
-        print("Choose Fz mobility CSV…")
-        fz = choose_open_file("Choose Fz mobility CSV")
-        print("Choose flight CSV…")
-        fl = choose_open_file("Choose flight CSV")
-        if not all([fx, fy, fz, fl]):
+        if not args.ones_h:
+            print("Choose Fx mobility CSV…")
+            fx = choose_open_file("Choose Fx mobility CSV")
+            print("Choose Fy mobility CSV…")
+            fy = choose_open_file("Choose Fy mobility CSV")
+            print("Choose Fz mobility CSV…")
+            fz = choose_open_file("Choose Fz mobility CSV")
+        print("Choose flight CSV or MAT file(s)…")
+        flight_paths = choose_open_files("Choose flight CSV or per-channel MAT files")
+        if len(flight_paths) == 1:
+            flight_input = flight_paths[0]
+        elif len(flight_paths) > 1:
+            flight_input = flight_paths
+        else:
+            flight_input = None
+        if (not args.ones_h and not all([fx, fy, fz])) or flight_input is None:
             print("Cancelled.", file=sys.stderr)
             return 1
-    elif not all([fx, fy, fz, fl]):
-        p.error("Provide --fx --fy --fz --flight or use --pick")
+    elif ((not args.ones_h and not all([fx, fy, fz])) or flight_input is None):
+        p.error(
+            "Provide --flight or --flight-mat plus either --ones-h or --fx --fy --fz, or use --pick"
+        )
 
-    assert fx is not None and fy is not None and fz is not None and fl is not None
+    assert flight_input is not None
 
     try:
-        frf_f, H_imp = frf_io.load_mobility_csv_triplet(fx, fy, fz)
-        time_s, acc_g, ch_names = load_flight_csv(fl)
+        time_s, acc_g, ch_names = load_flight_data(flight_input)
+        if args.ones_h:
+            frf_f, H_imp = frf_io.build_ones_mobility(time_s, acc_g.shape[1])
+            mobility_si = True
+        else:
+            assert fx is not None and fy is not None and fz is not None
+            frf_f, H_imp = frf_io.load_mobility_csv_triplet(fx, fy, fz)
+            mobility_si = args.mobility_si
     except Exception as e:
         print(f"Load error: {e}", file=sys.stderr)
         return 1
@@ -95,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
             H_imperial=H_imp,
             g0=args.g0,
             tikhonov_lambda=args.lam,
-            mobility_is_si=args.mobility_si,
+            mobility_is_si=mobility_si,
         )
     except Exception as e:
         print(f"Run error: {e}", file=sys.stderr)

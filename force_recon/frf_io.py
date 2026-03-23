@@ -1,4 +1,4 @@
-"""Load mobility / accelerance from CSV (three files: Fx, Fy, Fz columns)."""
+"""Load mobility / accelerance from CSV or create dummy mobility arrays."""
 
 from __future__ import annotations
 
@@ -53,3 +53,29 @@ def load_accelerance_csv_triplet(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Same CSV layout but values are accelerance a/F (skip jω step)."""
     return load_mobility_csv_triplet(path_x, path_y, path_z, **kwargs)
+
+
+def build_ones_mobility(
+    time_s: np.ndarray,
+    n_sensors: int,
+    *,
+    n_loads: int = 3,
+    value: complex = 1.0 + 0.0j,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build a constant dummy mobility tensor H = value for workflow plumbing.
+
+    The frequency grid is derived from the supplied flight time vector so it spans
+    0..Nyquist and can be interpolated onto any shorter analysis window FFT grid.
+    """
+    t = np.asarray(time_s, dtype=np.float64).ravel()
+    if t.size < 2:
+        raise ValueError("Need at least two time samples to build dummy mobility")
+    dt = np.diff(t)
+    med = float(np.median(dt))
+    if med <= 0:
+        raise ValueError("Time vector must be strictly increasing")
+    fs_hz = 1.0 / med
+    freqs_hz = np.fft.rfftfreq(t.size, d=1.0 / fs_hz)
+    H = np.full((freqs_hz.size, int(n_sensors), int(n_loads)), complex(value), dtype=np.complex128)
+    return freqs_hz, H

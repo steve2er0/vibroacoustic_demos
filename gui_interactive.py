@@ -32,15 +32,15 @@ from force_recon.export_nastran import (
     write_force_spectrum_csv,
     write_reconstruction_diagnostics_csv,
 )
-from force_recon.flight_io import load_flight_csv
+from force_recon.flight_io import load_flight_data
 from force_recon.simply_supported_plate import generate_simply_supported_plate_case
-from gui_file_dialogs import choose_open_file, choose_save_file
+from gui_file_dialogs import choose_open_file, choose_open_files, choose_save_file
 from gui_plotting import draw_conditioning, draw_spectra
 
 
 class InteractiveForceReconGUI:
     def __init__(self) -> None:
-        self.paths: dict[str, Path | None] = {
+        self.paths: dict[str, object | None] = {
             "fx": None,
             "fy": None,
             "fz": None,
@@ -61,6 +61,7 @@ class InteractiveForceReconGUI:
         self.f_max_hz: float | None = None
         self.fft_window: str = "hann"
         self.mobility_si: bool = False
+        self.use_ones_h: bool = False
         self.ch_i: int = 0
 
         self.window_options = ["hann", "boxcar"]
@@ -70,7 +71,7 @@ class InteractiveForceReconGUI:
         self.ax_prev = self.fig_setup.add_axes([0.06, 0.34, 0.90, 0.60])
         self._build_controls()
         self._status(
-            "Load CSVs (or built-in plate demo), drag the orange span, then run reconstruction."
+            "Load FRF CSVs and flight CSV/MAT data (or built-in plate demo), then run reconstruction."
         )
 
     def _build_controls(self) -> None:
@@ -134,15 +135,20 @@ class InteractiveForceReconGUI:
         self.rb_window = RadioButtons(ax_win, self.window_options, active=0)
         self.rb_window.on_clicked(self._on_window_choice)
 
-        ax_prev_ch = fig.add_axes([0.44, 0.08, 0.06, 0.06])
+        ax_dummy = fig.add_axes([0.42, 0.05, 0.12, 0.10])
+        ax_dummy.set_title("Dummy H", fontsize=8)
+        self.chk_ones_h = CheckButtons(ax_dummy, ["Use H=1"], [False])
+        self.chk_ones_h.on_clicked(self._on_chk_ones_h)
+
+        ax_prev_ch = fig.add_axes([0.56, 0.08, 0.06, 0.06])
         self.btn_prev_ch = Button(ax_prev_ch, "◀ ch")
         self.btn_prev_ch.on_clicked(self._on_prev_channel)
 
-        ax_next_ch = fig.add_axes([0.51, 0.08, 0.06, 0.06])
+        ax_next_ch = fig.add_axes([0.63, 0.08, 0.06, 0.06])
         self.btn_next_ch = Button(ax_next_ch, "ch ▶")
         self.btn_next_ch.on_clicked(self._on_next_channel)
 
-        self.ax_channel_label = fig.add_axes([0.60, 0.06, 0.36, 0.08])
+        self.ax_channel_label = fig.add_axes([0.72, 0.06, 0.24, 0.08])
         self.ax_channel_label.set_axis_off()
         self.channel_label = self.ax_channel_label.text(
             0.0, 0.5, "PSD channel: #0", va="center", fontsize=10
@@ -154,6 +160,9 @@ class InteractiveForceReconGUI:
 
     def _on_chk_si(self, _label: str) -> None:
         self.mobility_si = self.chk_si.get_status()[0]
+
+    def _on_chk_ones_h(self, _label: str) -> None:
+        self.use_ones_h = self.chk_ones_h.get_status()[0]
 
     def _on_t0_text(self, s: str) -> None:
         try:
@@ -263,43 +272,67 @@ class InteractiveForceReconGUI:
         )
 
     def _on_files(self, _event=None) -> None:
-        self._status("Choose Fx, Fy, Fz, then flight…")
+        if self.use_ones_h:
+            self._status("Choose flight CSV or MAT files; H will be set to ones().")
+        else:
+            self._status("Choose Fx, Fy, Fz, then flight CSV or MAT files…")
         self.fig_setup.canvas.draw_idle()
-        fx = choose_open_file("Mobility CSV — unit Fx")
-        if not fx:
+        fx = fy = fz = None
+        if not self.use_ones_h:
+            fx = choose_open_file("Mobility CSV — unit Fx")
+            if not fx:
+                self._status("Cancelled.")
+                return
+            fy = choose_open_file("Mobility CSV — unit Fy")
+            if not fy:
+                self._status("Cancelled.")
+                return
+            fz = choose_open_file("Mobility CSV — unit Fz")
+            if not fz:
+                self._status("Cancelled.")
+                return
+        flight_paths = choose_open_files("Flight CSV or per-channel MAT file(s)")
+        if not flight_paths:
             self._status("Cancelled.")
             return
-        fy = choose_open_file("Mobility CSV — unit Fy")
-        if not fy:
-            self._status("Cancelled.")
-            return
-        fz = choose_open_file("Mobility CSV — unit Fz")
-        if not fz:
-            self._status("Cancelled.")
-            return
-        fl = choose_open_file("Flight CSV (time + channels in g)")
-        if not fl:
-            self._status("Cancelled.")
-            return
+        flight_input: Path | list[Path]
+        if len(flight_paths) == 1:
+            flight_input = flight_paths[0]
+        else:
+            flight_input = flight_paths
         self.paths["fx"], self.paths["fy"], self.paths["fz"], self.paths["flight"] = (
             fx,
             fy,
             fz,
-            fl,
+            flight_input,
         )
         try:
-            frf_f, H = frf_io.load_mobility_csv_triplet(fx, fy, fz)
-            t, acc, names = load_flight_csv(fl)
+            t, acc, names = load_flight_data(flight_input)
+            if self.use_ones_h:
+                frf_f, H = frf_io.build_ones_mobility(t, acc.shape[1])
+                if not self.chk_si.get_status()[0]:
+                    self.chk_si.set_active(0)
+            else:
+                assert fx is not None and fy is not None and fz is not None
+                frf_f, H = frf_io.load_mobility_csv_triplet(fx, fy, fz)
         except Exception as e:
             self._status(f"Load error: {e}")
             return
+        is_mat = (
+            isinstance(flight_input, list)
+            or (isinstance(flight_input, Path) and flight_input.suffix.lower() == ".mat")
+        )
         self._load_case_arrays(
             frf_freqs_hz=frf_f,
             H_mobility=H,
             time_s=t,
             acc_g=acc,
             channel_names=names,
-            source_label="Loaded CSV data",
+            source_label=(
+                "Loaded flight data with H=ones()"
+                if self.use_ones_h
+                else ("Loaded MAT flight data" if is_mat else "Loaded CSV data")
+            ),
         )
 
     def _on_demo(self, _event=None) -> None:
@@ -310,6 +343,8 @@ class InteractiveForceReconGUI:
             return
         if self.chk_si.get_status()[0]:
             self.chk_si.set_active(0)
+        if self.chk_ones_h.get_status()[0]:
+            self.chk_ones_h.set_active(0)
         self.tb_lam.set_val("1e-7")
         self.tb_fmin.set_val("5")
         self.tb_fmax.set_val("220")
@@ -408,8 +443,15 @@ class InteractiveForceReconGUI:
     def _on_run(self, _event=None) -> None:
         if not self._read_float_boxes():
             return
-        if self.time_s is None or self.acc_g is None or self.frf_f is None or self.H is None:
-            self._status("Load CSV files first.")
+        if self.time_s is None or self.acc_g is None:
+            self._status("Load data files first.")
+            return
+        if self.use_ones_h:
+            self.frf_f, self.H = frf_io.build_ones_mobility(self.time_s, self.acc_g.shape[1])
+            if not self.chk_si.get_status()[0]:
+                self.chk_si.set_active(0)
+        if self.frf_f is None or self.H is None:
+            self._status("Load data files first.")
             return
         if self.t1 <= self.t0:
             self._status("Need t₁ > t₀.")
@@ -418,7 +460,7 @@ class InteractiveForceReconGUI:
         if self.ch_i >= n_ch:
             self.ch_i = n_ch - 1
             self.tb_ch.set_val(str(self.ch_i))
-        self.mobility_si = self.chk_si.get_status()[0]
+        self.mobility_si = self.chk_si.get_status()[0] or self.use_ones_h
         try:
             self.res = pipeline.reconstruct_forces(
                 time_s=self.time_s,

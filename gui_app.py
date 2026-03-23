@@ -12,6 +12,10 @@ Force reconstruction — entry point.
 
 **CLI / headless** (paths + optional ``--save``, no interactive slice):
 ``python3 gui_app.py --fx … --fy … --fz … --flight … --t0 0 --t1 1 --save out.csv``
+or
+``python3 gui_app.py --fx … --fy … --fz … --flight-mat ch01.mat ch02.mat ch03.mat --t0 0 --t1 1``
+or
+``python3 gui_app.py --ones-h --flight-mat ch01.mat ch02.mat ch03.mat --t0 0 --t1 1``
 
 ``python3 gui_app.py --help`` — full CLI flags (delegated).
 """

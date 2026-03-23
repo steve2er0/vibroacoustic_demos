@@ -4,7 +4,7 @@ Vibroacoustic demos plus a **force reconstruction** toolkit (`force_recon/`).
 
 ## Force reconstruction
 
-Estimate three translational interface forces from **flight accelerations (g)** and **mobility** **H** = *v/F* from three NASTRAN-style CSVs (unit **Fx**, **Fy**, **Fz**).
+Estimate three translational interface forces from **flight accelerations (g)** and **mobility** **H** = *v/F* from three NASTRAN-style CSVs (unit **Fx**, **Fy**, **Fz**). Flight data can come from a single CSV or ordered per-channel MATLAB `.mat` files. For workflow/plumbing tests, Python can also synthesize a dummy **H = ones()** mobility tensor from the flight timebase.
 
 ### Setup
 
@@ -20,13 +20,14 @@ python3 -m pip install -r requirements.txt
 python3 gui_app.py
 ```
 
-- **All platforms:** **interactive Matplotlib** window — load four CSVs, then **drag the orange band** on the flight preview to set the reconstruction **time window** (or type **t₀ / t₁**). **Run reconstruction** opens a second window with spectra and conditioning. **Save F̂ CSV** uses a native save dialog.
+- **All platforms:** **interactive Matplotlib** window — load three FRF CSVs plus either a flight CSV or ordered per-channel `.mat` files, then **drag the orange band** on the flight preview to set the reconstruction **time window** (or type **t₀ / t₁**). **Run reconstruction** opens a second window with spectra and conditioning. **Save F̂ CSV** uses a native save dialog.
+- Added a dummy-mobility option: **Use H = ones()** if you want to exercise the flight-data workflow before real FRFs are available.
 - Added workflow controls: **Use Full Time**, **PSD channel step buttons**, **FFT window selection** (`hann` / `boxcar`), and optional **frequency-band limits** (`fmin`, `fmax`).
 - Added diagnostics export: **Save diagnostics…** writes per-frequency conditioning/MAC/residual metrics to CSV.
 - Added one-click validation dataset: **Load Plate Demo** generates a built-in simply-supported plate case (modal synthetic FRF + flight).
 - **macOS:** `macosx` backend + **AppleScript** file dialogs (no Tk import — avoids Tcl abort on some Xcode Pythons).
 - **Windows / Linux:** `TkAgg` + **Tk** only for open/save dialogs (not the main plot window).
-- **Headless / script:** `python3 gui_app.py --fx … --fy … --fz … --flight … --t0 … --t1 … [--save out.csv]` (see `--help`).
+- **Headless / script:** `python3 gui_app.py --fx … --fy … --fz … --flight … --t0 … --t1 … [--save out.csv]`, `python3 gui_app.py --fx … --fy … --fz … --flight-mat ch01.mat ch02.mat ch03.mat --t0 … --t1 …`, or `python3 gui_app.py --ones-h --flight-mat ch01.mat ch02.mat ch03.mat --t0 … --t1 …` (see `--help`).
 - **Legacy:** full Tk embedded UI: `FORCE_RECON_GUI=tk python3 gui_app.py`
 
 ### GUI (recommended: Streamlit web app)
@@ -43,8 +44,9 @@ python3 gui_app.py --web
 - No hidden secondary plot windows; better behavior on macOS and remote sessions.
 - Supports:
   - Built-in simply supported plate demo dataset
-  - Local CSV paths
-  - Direct CSV uploads (Fx/Fy/Fz + flight)
+  - Local file paths for flight CSV or ordered per-channel MAT files
+  - Direct uploads for Fx/Fy/Fz CSV plus either a flight CSV or flight MAT files
+  - Optional dummy mobility: **H = ones()**
 - Downloads:
   - `F_hat_spectrum.csv`
   - `reconstruction_diagnostics.csv`
@@ -53,8 +55,17 @@ Upload:
 
 - Three mobility CSVs: `freq_hz,re0,im0,re1,im1,...` per file (same frequencies and sensor order).
 - Flight CSV: `time_s,ch0,ch1,...` in **g**.
+- Or ordered per-channel flight MAT files, one per channel, each with one structure containing `amp`, `t`, and `sr`.
 
 Options: **g₀**, time window, Tikhonov **λ**, checkbox if **H** is already SI.
+
+Python library helper for dummy FRFs:
+
+```python
+from force_recon import frf_io
+
+frf_f, H_dummy = frf_io.build_ones_mobility(time_s=t, n_sensors=acc_g.shape[1])
+```
 
 ### Example synthetic data
 
@@ -130,14 +141,18 @@ python3 examples/generate_synthetic_csv.py   # creates examples/synthetic_data/ 
 python3 -m pytest tests/ -q
 ```
 
-(All tests should pass; **9 passed** including the simply-supported plate reconstruction case.)
+(All tests should pass; **12 passed** including the simply-supported plate reconstruction case, Python MAT-flight import coverage, and the dummy-`H=ones()` helper.)
 
 ### Library usage
 
 ```python
 from force_recon import frf_io, pipeline
+from force_recon.flight_io import load_flight_data
 
 frf_f, H = frf_io.load_mobility_csv_triplet("H_x.csv", "H_y.csv", "H_z.csv")
+t, acc_g, ch_names = load_flight_data(
+    ["accel_ch01.mat", "accel_ch02.mat", "accel_ch03.mat"]
+)
 res = pipeline.reconstruct_forces(
     time_s=t,
     acc_g=acc_g,

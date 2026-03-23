@@ -12,7 +12,7 @@ import numpy as np
 import streamlit as st
 
 from force_recon import frf_io, pipeline, units
-from force_recon.flight_io import load_flight_csv
+from force_recon.flight_io import load_flight_data, load_flight_mat_files
 from force_recon.simply_supported_plate import generate_simply_supported_plate_case
 from gui_plotting import draw_conditioning, draw_spectra
 
@@ -45,10 +45,42 @@ def _load_triplet_uploads(
     fx_upload,
     fy_upload,
     fz_upload,
-    flight_upload,
+    *,
+    flight_csv_upload=None,
+    flight_mat_uploads=None,
+    use_ones_h: bool = False,
 ) -> CaseData:
-    if not all([fx_upload, fy_upload, fz_upload, flight_upload]):
-        raise ValueError("Upload all four CSV files (Fx, Fy, Fz, flight)")
+    if not use_ones_h and not all([fx_upload, fy_upload, fz_upload]):
+        raise ValueError("Upload Fx, Fy, and Fz CSV files")
+
+    if flight_csv_upload is not None:
+        flight_text = flight_csv_upload.getvalue().decode("utf-8")
+        with io.StringIO(flight_text) as f:
+            header = f.readline().strip().split(",")
+        flight_data = np.loadtxt(io.StringIO(flight_text), delimiter=",", skiprows=1)
+        if flight_data.ndim == 1:
+            flight_data = flight_data.reshape(1, -1)
+        t = np.asarray(flight_data[:, 0], dtype=np.float64)
+        acc = np.asarray(flight_data[:, 1:], dtype=np.float64)
+        names = (
+            header[1:]
+            if len(header) == acc.shape[1] + 1
+            else [f"ch{i}" for i in range(acc.shape[1])]
+        )
+        label = "Uploaded CSV data"
+    elif flight_mat_uploads:
+        streams = [io.BytesIO(upload.getvalue()) for upload in flight_mat_uploads]
+        t, acc, names = load_flight_mat_files(
+            streams,
+            channel_names=[Path(upload.name).stem for upload in flight_mat_uploads],
+            source_names=[upload.name for upload in flight_mat_uploads],
+        )
+        label = "Uploaded MAT flight data"
+    else:
+        raise ValueError("Upload either a flight CSV or one or more flight MAT files")
+    if use_ones_h:
+        return _build_ones_h_case("Uploaded flight data with H=ones()", t, acc, names)
+
     fx_f, fx_c = _parse_mobility_csv_text(
         fx_upload.getvalue().decode("utf-8"), "Fx CSV"
     )
@@ -63,22 +95,8 @@ def _load_triplet_uploads(
     if fx_c.shape != fy_c.shape or fx_c.shape != fz_c.shape:
         raise ValueError("Mobility sensor column counts must match across Fx/Fy/Fz")
     H = np.stack([fx_c, fy_c, fz_c], axis=2)
-
-    flight_text = flight_upload.getvalue().decode("utf-8")
-    with io.StringIO(flight_text) as f:
-        header = f.readline().strip().split(",")
-    flight_data = np.loadtxt(io.StringIO(flight_text), delimiter=",", skiprows=1)
-    if flight_data.ndim == 1:
-        flight_data = flight_data.reshape(1, -1)
-    t = np.asarray(flight_data[:, 0], dtype=np.float64)
-    acc = np.asarray(flight_data[:, 1:], dtype=np.float64)
-    names = (
-        header[1:]
-        if len(header) == acc.shape[1] + 1
-        else [f"ch{i}" for i in range(acc.shape[1])]
-    )
     return CaseData(
-        label="Uploaded CSV data",
+        label=label,
         time_s=t,
         acc_g=acc,
         ch_names=names,
@@ -89,13 +107,18 @@ def _load_triplet_uploads(
     )
 
 
-def _load_from_paths(fx: str, fy: str, fz: str, flight: str) -> CaseData:
-    if not all([fx.strip(), fy.strip(), fz.strip(), flight.strip()]):
-        raise ValueError("Set all four CSV paths")
+def _load_from_paths(fx: str, fy: str, fz: str, flight_input, *, use_ones_h: bool = False) -> CaseData:
+    if flight_input is None:
+        raise ValueError("Set a flight CSV/MAT input")
+    t, acc, names = load_flight_data(flight_input)
+    if use_ones_h:
+        return _build_ones_h_case("Flight data with H=ones()", t, acc, names)
+    if not all([fx.strip(), fy.strip(), fz.strip()]):
+        raise ValueError("Set Fx/Fy/Fz CSV paths or enable H = ones()")
     frf_f, H = frf_io.load_mobility_csv_triplet(fx.strip(), fy.strip(), fz.strip())
-    t, acc, names = load_flight_csv(flight.strip())
+    is_mat = isinstance(flight_input, list) or str(flight_input).lower().endswith(".mat")
     return CaseData(
-        label="CSV data from local paths",
+        label="MAT flight data from local paths" if is_mat else "CSV data from local paths",
         time_s=t,
         acc_g=acc,
         ch_names=names,
@@ -118,6 +141,24 @@ def _load_plate_demo() -> CaseData:
         mobility_is_si_default=False,
         fft_window_default=case.fft_window,
     )
+
+
+def _build_ones_h_case(label: str, time_s: np.ndarray, acc_g: np.ndarray, ch_names: list[str]) -> CaseData:
+    frf_f, H = frf_io.build_ones_mobility(time_s, acc_g.shape[1])
+    return CaseData(
+        label=label,
+        time_s=time_s,
+        acc_g=acc_g,
+        ch_names=ch_names,
+        frf_freqs_hz=frf_f,
+        H=H,
+        mobility_is_si_default=True,
+        fft_window_default="hann",
+    )
+
+
+def _parse_path_list(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 def _validate_case(case: CaseData) -> None:
@@ -303,7 +344,7 @@ def main() -> None:
         st.header("Data source")
         source = st.radio(
             "Choose input source",
-            ["Built-in plate demo", "Local CSV paths", "Upload CSV files"],
+            ["Built-in plate demo", "Local file paths", "Upload files"],
             index=0,
         )
 
@@ -315,41 +356,84 @@ def main() -> None:
                     st.session_state.case = case
                     st.session_state.res = None
                     st.success("Plate demo loaded")
-            elif source == "Local CSV paths":
+            elif source == "Local file paths":
                 default_root = Path(__file__).resolve().parent / "examples" / "data"
-                fx = st.text_input(
-                    "Fx CSV",
-                    value=str(default_root / "mobility_Fx.csv"),
+                use_ones_h = st.checkbox("Use H = ones()", value=False)
+                if use_ones_h:
+                    fx = fy = fz = ""
+                else:
+                    fx = st.text_input(
+                        "Fx CSV",
+                        value=str(default_root / "mobility_Fx.csv"),
+                    )
+                    fy = st.text_input(
+                        "Fy CSV",
+                        value=str(default_root / "mobility_Fy.csv"),
+                    )
+                    fz = st.text_input(
+                        "Fz CSV",
+                        value=str(default_root / "mobility_Fz.csv"),
+                    )
+                flight_local_kind = st.radio(
+                    "Flight input type",
+                    ["CSV", "MAT files"],
+                    horizontal=True,
                 )
-                fy = st.text_input(
-                    "Fy CSV",
-                    value=str(default_root / "mobility_Fy.csv"),
-                )
-                fz = st.text_input(
-                    "Fz CSV",
-                    value=str(default_root / "mobility_Fz.csv"),
-                )
-                fl = st.text_input(
-                    "Flight CSV",
-                    value=str(default_root / "flight_segment.csv"),
-                )
+                if flight_local_kind == "CSV":
+                    flight_input = st.text_input(
+                        "Flight CSV",
+                        value=str(default_root / "flight_segment.csv"),
+                    ).strip()
+                else:
+                    flight_input_text = st.text_area(
+                        "Flight MAT files, one path per line",
+                        value="",
+                        placeholder="/path/to/ch01.mat\n/path/to/ch02.mat\n/path/to/ch03.mat",
+                    )
+                    flight_input = _parse_path_list(flight_input_text)
                 if st.button("Load local files", use_container_width=True):
-                    case = _load_from_paths(fx, fy, fz, fl)
+                    case = _load_from_paths(fx, fy, fz, flight_input, use_ones_h=use_ones_h)
                     _validate_case(case)
                     st.session_state.case = case
                     st.session_state.res = None
-                    st.success("Local CSVs loaded")
+                    st.success("Local files loaded")
             else:
-                fx_up = st.file_uploader("Fx CSV", type=["csv"], key="fx_upload")
-                fy_up = st.file_uploader("Fy CSV", type=["csv"], key="fy_upload")
-                fz_up = st.file_uploader("Fz CSV", type=["csv"], key="fz_upload")
-                fl_up = st.file_uploader("Flight CSV", type=["csv"], key="flight_upload")
+                use_ones_h = st.checkbox("Use H = ones()", value=False, key="upload_ones_h")
+                if use_ones_h:
+                    fx_up = fy_up = fz_up = None
+                else:
+                    fx_up = st.file_uploader("Fx CSV", type=["csv"], key="fx_upload")
+                    fy_up = st.file_uploader("Fy CSV", type=["csv"], key="fy_upload")
+                    fz_up = st.file_uploader("Fz CSV", type=["csv"], key="fz_upload")
+                flight_upload_kind = st.radio(
+                    "Flight upload type",
+                    ["CSV", "MAT files"],
+                    horizontal=True,
+                )
+                if flight_upload_kind == "CSV":
+                    fl_up = st.file_uploader("Flight CSV", type=["csv"], key="flight_upload")
+                    fl_mat_up = None
+                else:
+                    fl_up = None
+                    fl_mat_up = st.file_uploader(
+                        "Flight MAT files",
+                        type=["mat"],
+                        accept_multiple_files=True,
+                        key="flight_mat_upload",
+                    )
                 if st.button("Load uploaded files", use_container_width=True):
-                    case = _load_triplet_uploads(fx_up, fy_up, fz_up, fl_up)
+                    case = _load_triplet_uploads(
+                        fx_up,
+                        fy_up,
+                        fz_up,
+                        flight_csv_upload=fl_up,
+                        flight_mat_uploads=fl_mat_up,
+                        use_ones_h=use_ones_h,
+                    )
                     _validate_case(case)
                     st.session_state.case = case
                     st.session_state.res = None
-                    st.success("Uploaded CSVs loaded")
+                    st.success("Uploaded files loaded")
         except Exception as e:
             st.error(f"Load error: {e}")
 

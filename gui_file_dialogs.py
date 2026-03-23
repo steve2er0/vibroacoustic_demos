@@ -7,7 +7,12 @@ import sys
 from pathlib import Path
 
 
-def choose_open_file(title: str) -> Path | None:
+def choose_open_file(
+    title: str,
+    *,
+    filetypes=None,
+) -> Path | None:
+    filetypes = filetypes or [("CSV", "*.csv"), ("All", "*.*")]
     if sys.platform == "darwin":
         safe = title.replace('"', "'")
         script = f'POSIX path of (choose file with prompt "{safe}")'
@@ -30,11 +35,52 @@ def choose_open_file(title: str) -> Path | None:
     try:
         p = filedialog.askopenfilename(
             title=title,
-            filetypes=[("CSV", "*.csv"), ("All", "*.*")],
+            filetypes=filetypes,
         )
     finally:
         root.destroy()
     return Path(p) if p else None
+
+
+def choose_open_files(
+    title: str,
+    *,
+    filetypes=None,
+) -> list[Path]:
+    filetypes = filetypes or [("CSV / MAT", ("*.csv", "*.mat")), ("All", "*.*")]
+    if sys.platform == "darwin":
+        safe = title.replace('"', "'")
+        script = (
+            f'set xs to choose file with prompt "{safe}" with multiple selections allowed true\n'
+            'set out to ""\n'
+            'repeat with f in xs\n'
+            'set out to out & POSIX path of f & linefeed\n'
+            'end repeat\n'
+            'return out'
+        )
+        r = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0:
+            return []
+        return [Path(line) for line in r.stdout.splitlines() if line.strip()]
+
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        paths = filedialog.askopenfilenames(
+            title=title,
+            filetypes=filetypes,
+        )
+    finally:
+        root.destroy()
+    return [Path(p) for p in paths if p]
 
 
 def choose_save_file(default_name: str) -> Path | None:
