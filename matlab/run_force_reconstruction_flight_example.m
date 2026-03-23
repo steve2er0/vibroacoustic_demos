@@ -51,7 +51,10 @@ opts.t_end = 3.5;
 opts.fft_window = 'hann';
 opts.tikhonov_lambda = 0.0;
 opts.plot_results = true;
+opts.plot_channel_idx = 1;
 opts.verbose = true;
+opts.show_progress = true;
+opts.progress_interval_sec = 2.0;
 
 % Uncomment these to write CSV outputs from MATLAB.
 % opts.save_force_csv = fullfile(repoRoot, 'F_hat_spectrum_matlab.csv');

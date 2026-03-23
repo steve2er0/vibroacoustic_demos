@@ -32,7 +32,10 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 %       f_max_hz              optional upper analysis limit
 %       fft_window            'hann' or 'boxcar', default = 'hann'
 %       plot_results          plot reconstructed forces + diagnostics, default = false
+%       plot_channel_idx      1-based channel index for acceleration comparison plots, default = 1
 %       verbose               print summary metrics, default = true
+%       show_progress         print stage progress and timings, default = verbose
+%       progress_interval_sec progress update period during solve loop, default = 2.0
 %       save_force_csv        optional output path for F_hat CSV
 %       save_diagnostics_csv  optional output path for diagnostics CSV
 %
@@ -43,7 +46,9 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 %       singular_values, mac_xy, mac_xz, mac_yz, response_mac,
 %       relative_residual, valid_mask, fs_hz, t_start, t_end
 %   inputs
-%       Loaded source data and resolved options.
+%       Loaded source data and resolved options. When plot_results=true,
+%       MATLAB also compares the measured and reconstructed acceleration
+%       for opts.plot_channel_idx in time and PSD form.
 %
 % Example
 %   opts = struct('t_start', 0.5, 't_end', 3.5, 'fft_window', 'hann', ...
@@ -62,15 +67,37 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
         error('opts must be a struct when provided.');
     end
 
+    progress_enabled = resolve_preload_progress_option(opts);
+    overall_timer = tic;
+    timing = struct();
+
+    if progress_enabled
+        fprintf('\n');
+        fprintf('Starting force reconstruction from flight input\n');
+        fprintf('---------------------------------------------\n');
+    end
+
     assert_file_exists(pathFx, 'pathFx');
     assert_file_exists(pathFy, 'pathFy');
     assert_file_exists(pathFz, 'pathFz');
     assert_flight_input_exists(flightInput, 'flightInput');
 
+    stage_timer = tic;
+    log_progress(progress_enabled, 'Loading mobility CSV triplet...\n');
     [frf_freqs_hz, H_input] = load_mobility_csv_triplet(pathFx, pathFy, pathFz);
-    [time_s, acc_g, channel_names, flight_input_type] = load_flight_input(flightInput);
+    timing.load_mobility_sec = toc(stage_timer);
+    log_progress(progress_enabled, 'Loaded mobility CSVs: %d frequencies, %d sensors in %s.\n', ...
+        numel(frf_freqs_hz), size(H_input, 2), format_duration(timing.load_mobility_sec));
+
+    stage_timer = tic;
+    log_progress(progress_enabled, 'Loading flight input...\n');
+    [time_s, acc_g, channel_names, flight_input_type] = load_flight_input(flightInput, progress_enabled);
+    timing.load_flight_sec = toc(stage_timer);
+    log_progress(progress_enabled, 'Loaded %s flight input: %d samples, %d channels in %s.\n', ...
+        upper(flight_input_type), numel(time_s), size(acc_g, 2), format_duration(timing.load_flight_sec));
 
     opts = resolve_options(opts, time_s);
+    progress_enabled = opts.show_progress;
     if ~isempty(opts.f_min_hz) && ~isempty(opts.f_max_hz) && opts.f_max_hz < opts.f_min_hz
         error('opts.f_max_hz must be >= opts.f_min_hz.');
     end
@@ -81,6 +108,11 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     if size(H_input, 2) ~= size(acc_g, 2)
         error('H has %d sensors, but the flight input has %d channels.', size(H_input, 2), size(acc_g, 2));
     end
+    if ~isscalar(opts.plot_channel_idx) || ~isnumeric(opts.plot_channel_idx) || ...
+            ~isfinite(opts.plot_channel_idx) || opts.plot_channel_idx < 1 || ...
+            opts.plot_channel_idx > size(acc_g, 2) || opts.plot_channel_idx ~= round(opts.plot_channel_idx)
+        error('opts.plot_channel_idx must be an integer from 1 to %d.', size(acc_g, 2));
+    end
 
     time_mask = time_s >= opts.t_start & time_s <= opts.t_end;
     time_sel = time_s(time_mask);
@@ -90,10 +122,25 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
         error('Time slice too short for FFT. Need at least 8 samples after windowing.');
     end
 
+    selected_duration = 0.0;
+    if numel(time_sel) > 1
+        selected_duration = time_sel(end) - time_sel(1);
+    end
+    log_progress(progress_enabled, ...
+        'Selected analysis window %.6f to %.6f s: %d samples across %.6f s.\n', ...
+        opts.t_start, opts.t_end, numel(time_sel), selected_duration);
+
+    stage_timer = tic;
+    log_progress(progress_enabled, 'Computing windowed FFT for %d channels...\n', size(acc_sel_g, 2));
     fs_hz = infer_fs(time_sel);
     acc_sel_si = acc_sel_g * opts.g0;
     [freqs_hz, a_meas_fft] = complex_rfft_matrix(acc_sel_si, fs_hz, opts.fft_window);
+    timing.fft_sec = toc(stage_timer);
+    log_progress(progress_enabled, 'Computed FFT: %d frequency bins at %.3f Hz sample rate in %s.\n', ...
+        numel(freqs_hz), fs_hz, format_duration(timing.fft_sec));
 
+    stage_timer = tic;
+    log_progress(progress_enabled, 'Converting mobility to accelerance and interpolating onto FFT grid...\n');
     H_si = H_input;
     if ~opts.mobility_is_si
         H_si = mobility_imp_to_si(H_input);
@@ -101,6 +148,8 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 
     A_frf = accelerance_from_mobility(H_si, 2.0 * pi * frf_freqs_hz);
     A_fft = interp_complex_frequency(freqs_hz, frf_freqs_hz, A_frf, complex(NaN, NaN));
+    timing.interp_sec = toc(stage_timer);
+    log_progress(progress_enabled, 'Prepared FRFs on FFT grid in %s.\n', format_duration(timing.interp_sec));
 
     n_freq = numel(freqs_hz);
     n_sensors = size(a_meas_fft, 2);
@@ -116,23 +165,32 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     relative_residual = NaN(n_freq, 1);
     valid_mask = false(n_freq, 1);
 
-    for k = 1:n_freq
+    solve_mask = true(n_freq, 1);
+    if opts.skip_zero_hz
+        solve_mask = solve_mask & freqs_hz > 0;
+    end
+    if ~isempty(opts.f_min_hz)
+        solve_mask = solve_mask & freqs_hz >= opts.f_min_hz;
+    end
+    if ~isempty(opts.f_max_hz)
+        solve_mask = solve_mask & freqs_hz <= opts.f_max_hz;
+    end
+    finite_mask = all(isfinite(reshape(A_fft, n_freq, [])), 2);
+    solve_indices = find(solve_mask & finite_mask);
+    n_solve = numel(solve_indices);
+
+    stage_timer = tic;
+    last_progress_elapsed = -Inf;
+    if n_solve == 0
+        log_progress(progress_enabled, 'No valid frequency bins were available for reconstruction.\n');
+    else
+        log_progress(progress_enabled, 'Solving %d frequency bins...\n', n_solve);
+    end
+
+    for solve_idx = 1:n_solve
+        k = solve_indices(solve_idx);
         fk = freqs_hz(k);
-
-        if opts.skip_zero_hz && fk <= 0
-            continue;
-        end
-        if ~isempty(opts.f_min_hz) && fk < opts.f_min_hz
-            continue;
-        end
-        if ~isempty(opts.f_max_hz) && fk > opts.f_max_hz
-            continue;
-        end
-
-        Ak = squeeze(A_fft(k, :, :));
-        if any(~isfinite(Ak(:)))
-            continue;
-        end
+        Ak = reshape(A_fft(k, :, :), n_sensors, 3);
 
         ak = a_meas_fft(k, :).';
         [mac_xy(k), mac_xz(k), mac_yz(k)] = column_mac_pairs(Ak);
@@ -160,6 +218,25 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 
         response_mac_values(k) = response_mac(ak, a_pred);
         valid_mask(k) = true;
+
+        if progress_enabled
+            elapsed_solve_sec = toc(stage_timer);
+            if solve_idx == 1 || solve_idx == n_solve || ...
+                    (elapsed_solve_sec - last_progress_elapsed) >= opts.progress_interval_sec
+                eta_sec = 0.0;
+                if solve_idx < n_solve
+                    eta_sec = elapsed_solve_sec * (n_solve - solve_idx) / solve_idx;
+                end
+                fprintf('  Solve %d/%d (%.1f%%) | f = %.3f Hz | elapsed %s | ETA %s\n', ...
+                    solve_idx, n_solve, 100.0 * solve_idx / n_solve, fk, ...
+                    format_duration(elapsed_solve_sec), format_duration(eta_sec));
+                last_progress_elapsed = elapsed_solve_sec;
+            end
+        end
+    end
+    timing.solve_sec = toc(stage_timer);
+    if n_solve > 0
+        log_progress(progress_enabled, 'Completed frequency solve in %s.\n', format_duration(timing.solve_sec));
     end
 
     result = struct();
@@ -178,6 +255,8 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     result.fs_hz = fs_hz;
     result.t_start = opts.t_start;
     result.t_end = opts.t_end;
+    timing.reconstruction_sec = toc(overall_timer);
+    result.timing = timing;
 
     inputs = struct();
     inputs.path_fx = pathFx;
@@ -192,20 +271,34 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     inputs.acc_g = acc_g;
     inputs.channel_names = channel_names;
     inputs.options = opts;
+    inputs.timing = timing;
 
+    if ~isempty(opts.save_force_csv)
+        stage_timer = tic;
+        log_progress(progress_enabled, 'Writing force spectrum CSV: %s\n', opts.save_force_csv);
+        write_force_spectrum_csv(result.freqs_hz, result.F_hat, result.valid_mask, opts.save_force_csv);
+        log_progress(progress_enabled, 'Wrote force spectrum CSV in %s.\n', format_duration(toc(stage_timer)));
+    end
+    if ~isempty(opts.save_diagnostics_csv)
+        stage_timer = tic;
+        log_progress(progress_enabled, 'Writing diagnostics CSV: %s\n', opts.save_diagnostics_csv);
+        write_reconstruction_diagnostics_csv(result, opts.save_diagnostics_csv);
+        log_progress(progress_enabled, 'Wrote diagnostics CSV in %s.\n', format_duration(toc(stage_timer)));
+    end
+    if opts.plot_results
+        stage_timer = tic;
+        log_progress(progress_enabled, 'Rendering MATLAB figures...\n');
+        plot_reconstruction_results(result, inputs);
+        log_progress(progress_enabled, 'Rendered figures in %s.\n', format_duration(toc(stage_timer)));
+    end
+
+    timing.total_sec = toc(overall_timer);
+    result.timing = timing;
+    inputs.timing = timing;
     if opts.verbose
         print_summary(result);
     end
-
-    if ~isempty(opts.save_force_csv)
-        write_force_spectrum_csv(result.freqs_hz, result.F_hat, result.valid_mask, opts.save_force_csv);
-    end
-    if ~isempty(opts.save_diagnostics_csv)
-        write_reconstruction_diagnostics_csv(result, opts.save_diagnostics_csv);
-    end
-    if opts.plot_results
-        plot_reconstruction_results(result);
-    end
+    log_progress(progress_enabled, 'Total runtime: %s.\n', format_duration(timing.total_sec));
 end
 
 
@@ -221,7 +314,10 @@ function opts = resolve_options(opts, time_s)
     defaults.f_max_hz = [];
     defaults.fft_window = 'hann';
     defaults.plot_results = false;
+    defaults.plot_channel_idx = 1;
     defaults.verbose = true;
+    defaults.show_progress = [];
+    defaults.progress_interval_sec = 2.0;
     defaults.save_force_csv = '';
     defaults.save_diagnostics_csv = '';
 
@@ -231,6 +327,16 @@ function opts = resolve_options(opts, time_s)
         if ~isfield(opts, name) || isempty(opts.(name))
             opts.(name) = defaults.(name);
         end
+    end
+
+    if isempty(opts.show_progress)
+        opts.show_progress = logical(opts.verbose);
+    else
+        opts.show_progress = logical(opts.show_progress);
+    end
+    if ~isscalar(opts.progress_interval_sec) || ~isnumeric(opts.progress_interval_sec) || ...
+            ~isfinite(opts.progress_interval_sec) || opts.progress_interval_sec <= 0
+        error('opts.progress_interval_sec must be a positive finite scalar.');
     end
 end
 
@@ -292,12 +398,16 @@ function [freqs_hz, H] = load_mobility_csv_triplet(pathFx, pathFy, pathFz)
 end
 
 
-function [time_s, acc_g, names, input_type] = load_flight_input(flightInput)
+function [time_s, acc_g, names, input_type] = load_flight_input(flightInput, show_progress)
+    if nargin < 2
+        show_progress = false;
+    end
+
     if ischar(flightInput) || (isstring(flightInput) && isscalar(flightInput))
         pathValue = char(flightInput);
         [~, ~, ext] = fileparts(pathValue);
         if strcmpi(ext, '.mat')
-            [time_s, acc_g, names] = load_flight_mat_files({pathValue});
+            [time_s, acc_g, names] = load_flight_mat_files({pathValue}, show_progress);
             input_type = 'mat';
         else
             [time_s, acc_g, names] = load_flight_csv(pathValue);
@@ -311,7 +421,7 @@ function [time_s, acc_g, names, input_type] = load_flight_input(flightInput)
     end
 
     if iscell(flightInput)
-        [time_s, acc_g, names] = load_flight_mat_files(flightInput);
+        [time_s, acc_g, names] = load_flight_mat_files(flightInput, show_progress);
         input_type = 'mat';
         return;
     end
@@ -338,7 +448,11 @@ function [time_s, acc_g, names] = load_flight_csv(pathFlight)
 end
 
 
-function [time_s, acc_g, names] = load_flight_mat_files(matPaths)
+function [time_s, acc_g, names] = load_flight_mat_files(matPaths, show_progress)
+    if nargin < 2
+        show_progress = false;
+    end
+
     if isstring(matPaths)
         matPaths = cellstr(matPaths(:));
     end
@@ -360,6 +474,9 @@ function [time_s, acc_g, names] = load_flight_mat_files(matPaths)
             error('Per-channel flight inputs must be .mat files. Received: %s', pathValue);
         end
 
+        if show_progress
+            fprintf('  Loading flight MAT channel %d/%d: %s\n', idx, n_channels, pathValue);
+        end
         [amp_g, t_this, sr_this] = load_single_channel_mat(pathValue);
         [~, baseName, ~] = fileparts(pathValue);
         names{idx} = baseName;
@@ -370,6 +487,10 @@ function [time_s, acc_g, names] = load_flight_mat_files(matPaths)
     end
 
     [time_s, acc_g] = align_flight_channels(amp_cols, time_cols, sr_values, source_labels);
+    if show_progress
+        fprintf('  Aligned %d channel(s) to %.3f Hz common grid: %d samples from %.6f to %.6f s.\n', ...
+            n_channels, min(sr_values), numel(time_s), time_s(1), time_s(end));
+    end
 end
 
 
@@ -684,6 +805,16 @@ function print_summary(result)
     fprintf('Median response MAC          : %.6f\n', median_finite(result.response_mac(valid)));
     fprintf('Median relative residual     : %.6f\n', median_finite(result.relative_residual(valid)));
     fprintf('Median condition number      : %.6f\n', median_finite(result.cond_number(valid)));
+    if isfield(result, 'timing')
+        if isfield(result.timing, 'solve_sec')
+            fprintf('Solve time                  : %s\n', format_duration(result.timing.solve_sec));
+        end
+        if isfield(result.timing, 'total_sec')
+            fprintf('Total runtime               : %s\n', format_duration(result.timing.total_sec));
+        elseif isfield(result.timing, 'reconstruction_sec')
+            fprintf('Reconstruction runtime      : %s\n', format_duration(result.timing.reconstruction_sec));
+        end
+    end
     fprintf('\n');
 end
 
@@ -698,7 +829,51 @@ function value = median_finite(x)
 end
 
 
-function plot_reconstruction_results(result)
+function enabled = resolve_preload_progress_option(opts)
+    enabled = true;
+    if isfield(opts, 'show_progress') && ~isempty(opts.show_progress)
+        enabled = logical(opts.show_progress);
+        return;
+    end
+    if isfield(opts, 'verbose') && ~isempty(opts.verbose)
+        enabled = logical(opts.verbose);
+    end
+end
+
+
+function log_progress(enabled, varargin)
+    if enabled
+        fprintf(varargin{:});
+    end
+end
+
+
+function text = format_duration(seconds)
+    if ~isfinite(seconds)
+        text = 'n/a';
+        return;
+    end
+
+    seconds = max(0.0, double(seconds));
+    if seconds < 60.0
+        text = sprintf('%.1f s', seconds);
+        return;
+    end
+
+    minutes = floor(seconds / 60.0);
+    rem_seconds = seconds - 60.0 * minutes;
+    if seconds < 3600.0
+        text = sprintf('%dm %.1fs', minutes, rem_seconds);
+        return;
+    end
+
+    hours = floor(minutes / 60.0);
+    rem_minutes = minutes - 60.0 * hours;
+    text = sprintf('%dh %dm %.1fs', hours, rem_minutes, rem_seconds);
+end
+
+
+function plot_reconstruction_results(result, inputs)
     force_names = {'Fx', 'Fy', 'Fz'};
     valid = result.valid_mask;
     freq = result.freqs_hz;
@@ -741,6 +916,148 @@ function plot_reconstruction_results(result)
     ylabel('Condition number');
     title('Matrix conditioning');
     grid on;
+
+    plot_channel_idx = inputs.options.plot_channel_idx;
+    channel_name = resolve_plot_channel_name(inputs.channel_names, plot_channel_idx);
+    time_mask = inputs.time_s >= result.t_start & inputs.time_s <= result.t_end;
+    time_sel = inputs.time_s(time_mask);
+    acc_meas_g = inputs.acc_g(time_mask, plot_channel_idx);
+    n_time = numel(time_sel);
+    acc_pred_si = irfft_matrix(result.a_pred_fft(:, plot_channel_idx), n_time);
+    acc_pred_si = real(acc_pred_si(:));
+    acc_pred_g = acc_pred_si / inputs.options.g0;
+    acc_meas_si = acc_meas_g * inputs.options.g0;
+
+    [time_plot, acc_meas_plot_g] = downsample_series_for_plot(time_sel, acc_meas_g, 5000);
+    [~, acc_pred_plot_g] = downsample_series_for_plot(time_sel, acc_pred_g, 5000);
+
+    nperseg = min(256, max(32, floor(n_time / 4)));
+    [freq_meas_psd, psd_meas] = welch_psd_1d(acc_meas_si, result.fs_hz, nperseg, [], inputs.options.fft_window);
+    [freq_pred_psd, psd_pred] = welch_psd_1d(acc_pred_si, result.fs_hz, nperseg, [], inputs.options.fft_window);
+
+    figure('Name', 'Measured vs Predicted Acceleration', 'Color', 'w');
+
+    subplot(2, 1, 1);
+    plot(time_plot, acc_meas_plot_g, 'b-', 'LineWidth', 1.0);
+    hold on;
+    plot(time_plot, acc_pred_plot_g, 'r--', 'LineWidth', 1.0);
+    hold off;
+    xlabel('Time (s)');
+    ylabel('Acceleration (g)');
+    title(sprintf('Measured vs Predicted Acceleration — %s', channel_name));
+    legend('Measured', 'Predicted', 'Location', 'best');
+    grid on;
+
+    subplot(2, 1, 2);
+    loglog(freq_meas_psd, max(psd_meas, 1e-30), 'b-', 'LineWidth', 1.0);
+    hold on;
+    loglog(freq_pred_psd, max(psd_pred, 1e-30), 'r--', 'LineWidth', 1.0);
+    hold off;
+    xlabel('Frequency (Hz)');
+    ylabel('(m/s^2)^2/Hz');
+    title(sprintf('Acceleration PSD — %s', channel_name));
+    legend('Measured', 'Predicted', 'Location', 'best');
+    grid on;
+end
+
+
+function channel_name = resolve_plot_channel_name(channel_names, channel_idx)
+    if iscell(channel_names) && numel(channel_names) >= channel_idx && ~isempty(channel_names{channel_idx})
+        channel_name = channel_names{channel_idx};
+    else
+        channel_name = sprintf('ch%d', channel_idx - 1);
+    end
+end
+
+
+function [time_plot, data_plot] = downsample_series_for_plot(time_s, data, max_points)
+    n = numel(time_s);
+    if n <= max_points
+        time_plot = time_s(:);
+        data_plot = data(:);
+        return;
+    end
+
+    idx = unique(round(linspace(1, n, max_points)));
+    time_plot = time_s(idx);
+    data_plot = data(idx);
+end
+
+
+function [freqs_hz, pxx] = welch_psd_1d(x, fs_hz, nperseg, noverlap, window_name)
+    x = double(x(:));
+    n = numel(x);
+    if n == 0
+        error('Need at least one sample for PSD.');
+    end
+
+    if nargin < 3 || isempty(nperseg)
+        nperseg = min(256, max(32, floor(n / 4)));
+    end
+    nperseg = min(max(1, round(nperseg)), n);
+
+    if nargin < 4 || isempty(noverlap)
+        noverlap = floor(nperseg / 2);
+    end
+    noverlap = round(noverlap);
+    if noverlap < 0 || noverlap >= nperseg
+        error('noverlap must satisfy 0 <= noverlap < nperseg.');
+    end
+
+    if nargin < 5 || isempty(window_name)
+        window_name = 'hann';
+    end
+
+    step = nperseg - noverlap;
+    starts = 1:step:(n - nperseg + 1);
+    if isempty(starts)
+        starts = 1;
+    end
+
+    win = get_window_vector(window_name, nperseg);
+    win_energy = sum(win .^ 2);
+    if win_energy <= 0
+        error('Window energy must be positive.');
+    end
+
+    n_freq = floor(nperseg / 2) + 1;
+    freqs_hz = (0:n_freq-1).' * (fs_hz / nperseg);
+    pxx = zeros(n_freq, 1);
+
+    for start_idx = starts
+        segment = x(start_idx:start_idx + nperseg - 1);
+        segment = segment - mean(segment);
+        X = fft(segment .* win, nperseg);
+        P = abs(X(1:n_freq)) .^ 2 / (fs_hz * win_energy);
+        if mod(nperseg, 2) == 0
+            if n_freq > 2
+                P(2:end-1) = 2.0 * P(2:end-1);
+            end
+        else
+            if n_freq > 1
+                P(2:end) = 2.0 * P(2:end);
+            end
+        end
+        pxx = pxx + P;
+    end
+
+    pxx = pxx / numel(starts);
+end
+
+
+function x = irfft_matrix(one_sided_spectrum, n_time)
+    if isvector(one_sided_spectrum)
+        one_sided_spectrum = one_sided_spectrum(:);
+    end
+
+    if mod(n_time, 2) == 0
+        mirrored = conj(one_sided_spectrum(end-1:-1:2, :));
+    else
+        mirrored = conj(one_sided_spectrum(end:-1:2, :));
+    end
+
+    full_spectrum = [one_sided_spectrum; mirrored];
+    x = real(ifft(full_spectrum, n_time, 1));
 end
 
 

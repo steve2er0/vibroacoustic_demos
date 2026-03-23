@@ -97,6 +97,10 @@ The MATLAB pipeline runs the same windowed frequency-by-frequency inversion and 
 - `F_hat_spectrum.csv`
 - `reconstruction_diagnostics.csv`
 
+When `plot_results=true`, MATLAB now also opens a measured-versus-predicted acceleration
+comparison for a selected response channel, using the reconstructed forces to synthesize
+the model response.
+
 Example:
 
 ```matlab
@@ -105,6 +109,9 @@ opts = struct( ...
     't_end', 3.5, ...
     'fft_window', 'hann', ...
     'tikhonov_lambda', 0.0, ...
+    'plot_channel_idx', 1, ...
+    'show_progress', true, ...
+    'progress_interval_sec', 2.0, ...
     'plot_results', true);
 
 [result, inputs] = reconstruct_forces_from_flight_data( ...
@@ -123,6 +130,9 @@ flightMatFiles = {
 [result, inputs] = reconstruct_forces_from_flight_data( ...
     'mobility_Fx.csv', 'mobility_Fy.csv', 'mobility_Fz.csv', flightMatFiles, opts);
 ```
+
+For longer MATLAB runs, `show_progress=true` prints stage-level timings plus periodic
+solve-loop progress with elapsed time and ETA.
 
 Repo-local runner:
 
