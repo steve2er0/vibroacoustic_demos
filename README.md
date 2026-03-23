@@ -88,7 +88,9 @@ For `.mat` input, each file must contain exactly one structure with fields:
 - `t`: time vector in seconds
 - `sr`: sample rate in Hz
 
-The `.mat` file order must match the FRF sensor order.
+The `.mat` file order must match the FRF sensor order. Mixed sample rates and
+different channel lengths are allowed; the loaders align the channels over their
+common overlapping time span and linearly resample onto the slowest channel rate.
 
 The MATLAB pipeline runs the same windowed frequency-by-frequency inversion and can optionally write:
 

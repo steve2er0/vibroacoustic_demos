@@ -56,6 +56,28 @@ def test_load_flight_mat_files_roundtrip(tmp_path):
     assert names == ["sensor_a", "sensor_b"]
 
 
+def test_load_flight_mat_files_aligns_mixed_sample_rates(tmp_path):
+    fs_fast = 4.0
+    fs_slow = 2.0
+    t_fast = np.arange(0.0, 1.01, 1.0 / fs_fast)
+    t_slow = np.arange(0.25, 1.26, 1.0 / fs_slow)
+    amp_fast = t_fast + 1.0
+    amp_slow = 10.0 + 2.0 * t_slow
+
+    p_fast = tmp_path / "sensor_fast.mat"
+    p_slow = tmp_path / "sensor_slow.mat"
+    _write_channel_mat(p_fast, "sensor_fast", amp_fast, t_fast, fs_fast)
+    _write_channel_mat(p_slow, "sensor_slow", amp_slow, t_slow, fs_slow)
+
+    time_s, acc_g, names = load_flight_mat_files([p_fast, p_slow])
+
+    expected_t = np.array([0.25, 0.75], dtype=np.float64)
+    assert np.allclose(time_s, expected_t)
+    assert np.allclose(acc_g[:, 0], expected_t + 1.0)
+    assert np.allclose(acc_g[:, 1], 10.0 + 2.0 * expected_t)
+    assert names == ["sensor_fast", "sensor_slow"]
+
+
 def test_build_ones_mobility_shape():
     fs = 200.0
     t = np.arange(32, dtype=np.float64) / fs

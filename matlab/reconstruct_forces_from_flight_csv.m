@@ -18,6 +18,9 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 %          t     time vector [s]
 %          sr    sample rate [Hz]
 %          The order of the .mat files must match the FRF sensor order.
+%          Channels may have different sample rates and lengths; they are
+%          aligned over their common overlapping time span and linearly
+%          resampled onto the slowest channel sample rate.
 %   opts (optional struct)
 %       t_start               analysis start time [s], default = first sample
 %       t_end                 analysis end time [s], default = last sample
@@ -345,9 +348,10 @@ function [time_s, acc_g, names] = load_flight_mat_files(matPaths)
 
     n_channels = numel(matPaths);
     names = cell(1, n_channels);
-    acc_g = [];
-    time_s = [];
-    sr_ref = [];
+    amp_cols = cell(1, n_channels);
+    time_cols = cell(1, n_channels);
+    sr_values = zeros(1, n_channels);
+    source_labels = cell(1, n_channels);
 
     for idx = 1:n_channels
         pathValue = char(matPaths{idx});
@@ -359,17 +363,13 @@ function [time_s, acc_g, names] = load_flight_mat_files(matPaths)
         [amp_g, t_this, sr_this] = load_single_channel_mat(pathValue);
         [~, baseName, ~] = fileparts(pathValue);
         names{idx} = baseName;
-
-        if isempty(time_s)
-            time_s = t_this;
-            sr_ref = sr_this;
-            acc_g = zeros(numel(t_this), n_channels);
-        else
-            validate_matching_timebase(t_this, sr_this, time_s, sr_ref, pathValue);
-        end
-
-        acc_g(:, idx) = amp_g;
+        amp_cols{idx} = amp_g;
+        time_cols{idx} = t_this;
+        sr_values(idx) = sr_this;
+        source_labels{idx} = pathValue;
     end
+
+    [time_s, acc_g] = align_flight_channels(amp_cols, time_cols, sr_values, source_labels);
 end
 
 
@@ -437,19 +437,48 @@ function tf = has_required_flight_fields(value)
 end
 
 
-function validate_matching_timebase(time_s, sr_hz, time_ref, sr_ref, pathValue)
-    if numel(time_s) ~= numel(time_ref)
-        error('Channel file %s has %d samples, expected %d.', pathValue, numel(time_s), numel(time_ref));
+function [time_s, acc_g] = align_flight_channels(amp_cols, time_cols, sr_values, source_labels)
+    n_channels = numel(amp_cols);
+    if n_channels == 0
+        error('At least one .mat flight channel file is required.');
     end
 
-    sr_tol = max(1e-9, 1e-6 * max(abs(sr_ref), 1.0));
-    if abs(sr_hz - sr_ref) > sr_tol
-        error('Channel file %s has sample rate %.16g Hz, expected %.16g Hz.', pathValue, sr_hz, sr_ref);
+    if n_channels == 1
+        time_s = time_cols{1};
+        acc_g = amp_cols{1};
+        return;
     end
 
-    time_tol = max(1e-9, 1e-6 / max(abs(sr_ref), 1.0));
-    if any(abs(time_s - time_ref) > time_tol)
-        error('Channel file %s does not share the same time vector as the other channels.', pathValue);
+    start_times = cellfun(@(t) t(1), time_cols);
+    end_times = cellfun(@(t) t(end), time_cols);
+    start_common = max(start_times);
+    end_common = min(end_times);
+    target_fs = min(sr_values);
+    dt = 1.0 / target_fs;
+    time_tol = max(1e-12, 1e-9 * max([abs(start_common), abs(end_common), 1.0]));
+
+    if end_common <= start_common + time_tol
+        ranges = cell(1, n_channels);
+        for idx = 1:n_channels
+            ranges{idx} = sprintf('%s [%.9g, %.9g]', source_labels{idx}, time_cols{idx}(1), time_cols{idx}(end));
+        end
+        error('MAT flight channels do not share a common overlapping time span: %s', strjoin(ranges, ', '));
+    end
+
+    n_samples = floor((end_common - start_common) / dt + time_tol / dt) + 1;
+    time_s = start_common + (0:n_samples-1).' * dt;
+    time_s = time_s(time_s <= end_common + time_tol);
+    if numel(time_s) < 2
+        error('MAT flight channel overlap is too short after alignment; need at least two shared samples.');
+    end
+
+    acc_g = zeros(numel(time_s), n_channels);
+    for idx = 1:n_channels
+        acc_interp = interp1(time_cols{idx}, amp_cols{idx}, time_s, 'linear');
+        if any(~isfinite(acc_interp))
+            error('Channel file %s could not be interpolated onto the common time grid.', source_labels{idx});
+        end
+        acc_g(:, idx) = acc_interp;
     end
 end
 
@@ -503,10 +532,10 @@ function fs_hz = infer_fs(time_s)
     end
 
     dt = diff(time_s(:));
-    med_dt = median(dt);
-    if med_dt <= 0
+    if any(dt <= 0)
         error('Time vector must be strictly increasing.');
     end
+    med_dt = median(dt);
     fs_hz = 1.0 / med_dt;
 end
 

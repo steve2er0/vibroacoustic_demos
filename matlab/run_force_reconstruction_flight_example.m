@@ -20,6 +20,8 @@ flightInput = flightPath;
 %   amp  acceleration samples in g
 %   t    time vector in seconds
 %   sr   sample rate in Hz
+% Different channel sample rates are allowed; the loader aligns the channels
+% over their common overlap and resamples onto the slowest channel rate.
 % flightInput = {
 %     '/path/to/ch01.mat'
 %     '/path/to/ch02.mat'

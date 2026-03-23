@@ -40,7 +40,9 @@ def load_flight_mat_files(
     Load per-channel MAT files containing one structure with amp, t, sr fields.
 
     Each MAT file corresponds to one acceleration channel in g. The file order must
-    match the FRF sensor order.
+    match the FRF sensor order. Channels are aligned onto their common overlapping
+    time span and linearly resampled onto a shared uniform grid using the slowest
+    channel sample rate.
     """
     if isinstance(paths, (str, Path)) or hasattr(paths, "read"):
         items = [paths]
@@ -53,29 +55,26 @@ def load_flight_mat_files(
     if source_names is not None and len(source_names) != len(items):
         raise ValueError("source_names length must match number of MAT files")
 
-    time_ref: np.ndarray | None = None
-    sr_ref: float | None = None
-    acc_cols: list[np.ndarray] = []
+    amp_cols: list[np.ndarray] = []
+    time_cols: list[np.ndarray] = []
+    sr_values: list[float] = []
     names: list[str] = []
+    source_labels: list[str] = []
 
     for idx, item in enumerate(items):
         source_label = source_names[idx] if source_names is not None else _flight_source_label(item, idx)
         amp_g, time_s, sr_hz = _load_single_channel_mat(item, source_label)
-        if time_ref is None:
-            time_ref = time_s
-            sr_ref = sr_hz
-        else:
-            assert sr_ref is not None
-            _validate_matching_timebase(time_ref, sr_ref, time_s, sr_hz, source_label)
-        acc_cols.append(amp_g)
+        amp_cols.append(amp_g)
+        time_cols.append(time_s)
+        sr_values.append(sr_hz)
+        source_labels.append(source_label)
         if channel_names is not None:
             names.append(str(channel_names[idx]))
         else:
             names.append(_flight_channel_name(item, idx))
 
-    assert time_ref is not None
-    acc = np.column_stack(acc_cols)
-    return time_ref, acc, names
+    time_aligned, acc = _align_channels_on_common_timebase(amp_cols, time_cols, sr_values, source_labels)
+    return time_aligned, acc, names
 
 
 def load_flight_data(
@@ -171,29 +170,56 @@ def _infer_fs(time_s: np.ndarray, source_label: str) -> float:
     if time_s.size < 2:
         raise ValueError(f"{source_label}: need at least two time samples")
     dt = np.diff(np.asarray(time_s, dtype=np.float64).ravel())
-    med = float(np.median(dt))
-    if med <= 0:
+    if np.any(dt <= 0):
         raise ValueError(f"{source_label}: time vector must be strictly increasing")
+    med = float(np.median(dt))
     return 1.0 / med
 
 
-def _validate_matching_timebase(
-    time_ref: np.ndarray,
-    sr_ref: float,
-    time_s: np.ndarray,
-    sr_hz: float,
-    source_label: str,
-) -> None:
-    if time_s.shape != time_ref.shape:
+def _align_channels_on_common_timebase(
+    amp_cols: Sequence[np.ndarray],
+    time_cols: Sequence[np.ndarray],
+    sr_values: Sequence[float],
+    source_labels: Sequence[str],
+) -> tuple[np.ndarray, np.ndarray]:
+    if not amp_cols:
+        raise ValueError("Need at least one MAT file")
+
+    if len(amp_cols) == 1:
+        return np.asarray(time_cols[0], dtype=np.float64), np.asarray(amp_cols[0], dtype=np.float64)[:, None]
+
+    start_common = max(float(time_s[0]) for time_s in time_cols)
+    end_common = min(float(time_s[-1]) for time_s in time_cols)
+    target_fs = min(float(sr_hz) for sr_hz in sr_values)
+    dt = 1.0 / target_fs
+    time_tol = max(1e-12, 1e-9 * max(abs(start_common), abs(end_common), 1.0))
+
+    if end_common <= start_common + time_tol:
         raise ValueError(
-            f"{source_label}: sample count {time_s.shape[0]} does not match {time_ref.shape[0]}"
+            "MAT flight channels do not share a common overlapping time span: "
+            + ", ".join(
+                f"{label} [{float(time_s[0]):.9g}, {float(time_s[-1]):.9g}]"
+                for label, time_s in zip(source_labels, time_cols)
+            )
         )
-    sr_tol = max(1e-9, 1e-6 * max(abs(sr_ref), 1.0))
-    if abs(sr_hz - sr_ref) > sr_tol:
-        raise ValueError(f"{source_label}: sample rate {sr_hz} does not match {sr_ref}")
-    time_tol = max(1e-9, 1e-6 / max(abs(sr_ref), 1.0))
-    if not np.allclose(time_s, time_ref, rtol=0.0, atol=time_tol):
-        raise ValueError(f"{source_label}: time vector does not match the other channels")
+
+    span = end_common - start_common
+    n_samples = int(np.floor(span / dt + time_tol / dt)) + 1
+    time_common = start_common + np.arange(n_samples, dtype=np.float64) * dt
+    time_common = time_common[time_common <= end_common + time_tol]
+    if time_common.size < 2:
+        raise ValueError(
+            "MAT flight channel overlap is too short after alignment; need at least two shared samples"
+        )
+
+    acc_cols_resampled: list[np.ndarray] = []
+    for amp_g, time_s, label in zip(amp_cols, time_cols, source_labels):
+        acc_interp = np.interp(time_common, time_s, amp_g, left=np.nan, right=np.nan)
+        if not np.all(np.isfinite(acc_interp)):
+            raise ValueError(f"{label}: could not interpolate onto the common time grid")
+        acc_cols_resampled.append(acc_interp)
+
+    return time_common, np.column_stack(acc_cols_resampled)
 
 
 def _flight_source_label(source: str | Path | BinaryIO, idx: int) -> str:
