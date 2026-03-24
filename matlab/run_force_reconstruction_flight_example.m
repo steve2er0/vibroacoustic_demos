@@ -53,6 +53,7 @@ opts.tikhonov_lambda = 0.0;
 opts.plot_results = true;
 opts.plot_channel_idx = 1;
 opts.plot_all_channels = true;
+opts.plot_psd_error_map = true;
 opts.plot_lambda_sweep = true;
 opts.verbose = true;
 opts.show_progress = true;

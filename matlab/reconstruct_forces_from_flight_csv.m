@@ -36,6 +36,7 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 %       plot_results          plot reconstructed forces + diagnostics, default = false
 %       plot_channel_idx      1-based channel index for acceleration comparison plots, default = 1
 %       plot_all_channels     also plot all-channel measured/predicted overlays, default = true
+%       plot_psd_error_map    plot all-channel PSD dB-difference map, default = true
 %       plot_lambda_sweep     plot lambda sweep summary, default = false
 %       lambda_sweep_values   lambda values for the sweep, default = [0 1e-9 1e-8 1e-7 1e-6 1e-5]
 %       lambda_sweep_max_bins maximum bins used in the lambda sweep summary, default = 2000
@@ -365,6 +366,7 @@ function opts = resolve_options(opts, time_s)
     defaults.plot_results = false;
     defaults.plot_channel_idx = 1;
     defaults.plot_all_channels = true;
+    defaults.plot_psd_error_map = true;
     defaults.plot_lambda_sweep = false;
     defaults.lambda_sweep_values = [0, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5];
     defaults.lambda_sweep_max_bins = 2000;
@@ -388,6 +390,7 @@ function opts = resolve_options(opts, time_s)
         opts.show_progress = logical(opts.show_progress);
     end
     opts.plot_all_channels = logical(opts.plot_all_channels);
+    opts.plot_psd_error_map = logical(opts.plot_psd_error_map);
     opts.plot_lambda_sweep = logical(opts.plot_lambda_sweep);
 
     if ~isempty(opts.highpass_hz)
@@ -1180,15 +1183,13 @@ function plot_single_channel_comparison(result, inputs)
     channel_name = resolve_plot_channel_name(inputs.channel_names, plot_channel_idx);
     acc_meas_g = result.acc_meas_sel_g(:, plot_channel_idx);
     acc_pred_g = result.acc_pred_sel_g(:, plot_channel_idx);
-    acc_meas_si = result.acc_meas_sel_si(:, plot_channel_idx);
-    acc_pred_si = result.acc_pred_sel_si(:, plot_channel_idx);
 
     [time_plot, acc_meas_plot_g] = downsample_series_for_plot(result.time_sel_s, acc_meas_g, 5000);
     [~, acc_pred_plot_g] = downsample_series_for_plot(result.time_sel_s, acc_pred_g, 5000);
 
     nperseg = default_psd_nperseg(numel(result.time_sel_s));
-    [freq_meas_psd, psd_meas] = welch_psd_1d(acc_meas_si, result.fs_hz, nperseg, [], inputs.options.fft_window);
-    [freq_pred_psd, psd_pred] = welch_psd_1d(acc_pred_si, result.fs_hz, nperseg, [], inputs.options.fft_window);
+    [freq_meas_psd, psd_meas] = welch_psd_1d(acc_meas_g, result.fs_hz, nperseg, [], inputs.options.fft_window);
+    [freq_pred_psd, psd_pred] = welch_psd_1d(acc_pred_g, result.fs_hz, nperseg, [], inputs.options.fft_window);
 
     figure('Name', 'Measured vs Predicted Acceleration', 'Color', 'w');
 
@@ -1209,7 +1210,7 @@ function plot_single_channel_comparison(result, inputs)
     loglog(freq_pred_psd, max(psd_pred, 1e-30), 'r--', 'LineWidth', 1.0);
     hold off;
     xlabel('Frequency (Hz)');
-    ylabel('(m/s^2)^2/Hz');
+    ylabel('g^2/Hz');
     title(sprintf('Acceleration PSD — %s', channel_name));
     legend('Measured', 'Predicted', 'Location', 'best');
     grid on;
@@ -1224,7 +1225,7 @@ function plot_all_channel_comparison(result, inputs)
 
     [time_plot, acc_meas_plot_g] = downsample_series_for_plot(result.time_sel_s, result.acc_meas_sel_g, 3000);
     [~, acc_pred_plot_g] = downsample_series_for_plot(result.time_sel_s, result.acc_pred_sel_g, 3000);
-    nperseg = default_psd_nperseg(numel(result.time_sel_s));
+    [freq_psd, meas_psd_g, pred_psd_g, db_diff] = compute_all_channel_psd_difference(result, inputs);
     colors = lines(max(n_channels, 1));
     legend_handles = gobjects(n_channels, 1);
 
@@ -1248,16 +1249,95 @@ function plot_all_channel_comparison(result, inputs)
     subplot(2, 1, 2);
     hold on;
     for channel_idx = 1:n_channels
-        [freq_meas_psd, psd_meas] = welch_psd_1d(result.acc_meas_sel_si(:, channel_idx), result.fs_hz, nperseg, [], inputs.options.fft_window);
-        [freq_pred_psd, psd_pred] = welch_psd_1d(result.acc_pred_sel_si(:, channel_idx), result.fs_hz, nperseg, [], inputs.options.fft_window);
-        loglog(freq_meas_psd, max(psd_meas, 1e-30), '-', 'Color', colors(channel_idx, :), 'LineWidth', 0.9);
-        loglog(freq_pred_psd, max(psd_pred, 1e-30), '--', 'Color', colors(channel_idx, :), 'LineWidth', 0.9);
+        loglog(freq_psd, max(meas_psd_g(:, channel_idx), 1e-30), '-', 'Color', colors(channel_idx, :), 'LineWidth', 0.9);
+        loglog(freq_psd, max(pred_psd_g(:, channel_idx), 1e-30), '--', 'Color', colors(channel_idx, :), 'LineWidth', 0.9);
     end
     hold off;
     xlabel('Frequency (Hz)');
-    ylabel('(m/s^2)^2/Hz');
+    ylabel('g^2/Hz');
     title('All channel PSDs: solid = measured, dashed = predicted');
     grid on;
+
+    if inputs.options.plot_psd_error_map
+        plot_all_channel_psd_error_map(freq_psd, db_diff, inputs.channel_names);
+    end
+end
+
+
+function [freq_psd, meas_psd_g, pred_psd_g, db_diff] = compute_all_channel_psd_difference(result, inputs)
+    n_channels = size(result.acc_meas_sel_g, 2);
+    nperseg = default_psd_nperseg(numel(result.time_sel_s));
+    freq_psd = [];
+    meas_psd_g = [];
+    pred_psd_g = [];
+
+    for channel_idx = 1:n_channels
+        [freq_this, psd_meas] = welch_psd_1d(result.acc_meas_sel_g(:, channel_idx), result.fs_hz, nperseg, [], inputs.options.fft_window);
+        [freq_pred, psd_pred] = welch_psd_1d(result.acc_pred_sel_g(:, channel_idx), result.fs_hz, nperseg, [], inputs.options.fft_window);
+
+        if isempty(freq_psd)
+            freq_psd = freq_this;
+            meas_psd_g = zeros(numel(freq_psd), n_channels);
+            pred_psd_g = zeros(numel(freq_psd), n_channels);
+        elseif ~isequal(size(freq_psd), size(freq_this)) || any(abs(freq_psd - freq_this) > 1e-12) || ...
+                ~isequal(size(freq_psd), size(freq_pred)) || any(abs(freq_psd - freq_pred) > 1e-12)
+            error('PSD frequency grids do not match across channels.');
+        end
+
+        meas_psd_g(:, channel_idx) = psd_meas;
+        pred_psd_g(:, channel_idx) = psd_pred;
+    end
+
+    db_diff = 10.0 * log10(max(pred_psd_g, 1e-30) ./ max(meas_psd_g, 1e-30));
+end
+
+
+function plot_all_channel_psd_error_map(freq_psd, db_diff, channel_names)
+    if isempty(freq_psd) || isempty(db_diff)
+        return;
+    end
+
+    n_channels = size(db_diff, 2);
+    class_map = zeros(size(db_diff));
+    class_map(db_diff < -6.0) = -2;
+    class_map(db_diff >= -6.0 & db_diff < -3.0) = -1;
+    class_map(abs(db_diff) <= 3.0) = 0;
+    class_map(db_diff > 3.0 & db_diff <= 6.0) = 1;
+    class_map(db_diff > 6.0) = 2;
+
+    figure('Name', 'All Channel PSD Error Map', 'Color', 'w');
+
+    subplot(2, 1, 1);
+    imagesc(freq_psd, 1:n_channels, class_map.');
+    axis xy;
+    xlabel('Frequency (Hz)');
+    ylabel('Channel');
+    title('Predicted vs measured PSD difference (dB classes)');
+    colormap(gca, [0.1294 0.4000 0.6745; 0.5922 0.7804 0.9020; 0.6510 0.8471 0.3294; 0.9922 0.7490 0.4353; 0.8431 0.1882 0.1529]);
+    caxis([-2 2]);
+    cb = colorbar;
+    cb.Ticks = [-2, -1, 0, 1, 2];
+    cb.TickLabels = {'< -6 dB', '-6 to -3 dB', '+/- 3 dB', '+3 to +6 dB', '> +6 dB'};
+    set(gca, 'YTick', 1:n_channels, 'YTickLabel', build_channel_axis_labels(channel_names, n_channels));
+
+    subplot(2, 1, 2);
+    imagesc(freq_psd, 1:n_channels, db_diff.');
+    axis xy;
+    xlabel('Frequency (Hz)');
+    ylabel('Channel');
+    title('Predicted minus measured PSD (dB)');
+    colormap(gca, parula(256));
+    caxis([-12 12]);
+    colorbar;
+    set(gca, 'YTick', 1:n_channels, 'YTickLabel', build_channel_axis_labels(channel_names, n_channels));
+end
+
+
+function labels = build_channel_axis_labels(channel_names, n_channels)
+    labels = cell(n_channels, 1);
+    for idx = 1:n_channels
+        labels{idx} = resolve_plot_channel_name(channel_names, idx);
+    end
 end
 
 
