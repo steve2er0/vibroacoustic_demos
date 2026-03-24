@@ -13,6 +13,29 @@ def _fmt_real(value: float) -> str:
     return f"{value:.16E}"
 
 
+def _fmt_real_8(value: float) -> str:
+    if not np.isfinite(value):
+        raise ValueError("NASTRAN export only supports finite real values.")
+
+    candidates = [
+        f"{value:.7g}",
+        f"{value:.6g}",
+        f"{value:.5g}",
+        f"{value:.1E}",
+    ]
+    for token in candidates:
+        token = token.strip().replace("e", "E")
+        if token.startswith("0."):
+            token = token[1:]
+        elif token.startswith("-0."):
+            token = "-" + token[2:]
+        if "." not in token and "E" not in token:
+            token += "."
+        if len(token) <= 8:
+            return f"{token:>8s}"
+    raise ValueError(f"Could not format {value!r} into an 8-character NASTRAN real field.")
+
+
 def write_force_spectrum_csv(
     freqs_hz: np.ndarray,
     F_hat: np.ndarray,
@@ -121,16 +144,19 @@ def tabrnd1_snippet(
 
     psd: one-sided force PSD (N^2/Hz or lbf^2/Hz) same length as freqs.
     """
-    lines = [f"TABRND1,{tid},{xaxis},{yaxis}"]
-    valid_rows: list[str] = []
+    lines = [f"{'TABRND1':<8s}{tid:>8d}"]
+    fields: list[str] = []
     for f, g in zip(freqs_hz, psd):
         if np.isfinite(f) and np.isfinite(g) and g >= 0:
-            valid_rows.append(f"+,{_fmt_real(float(f))},{_fmt_real(float(g))}")
-    if valid_rows:
-        valid_rows[-1] += ",ENDT"
-        lines.extend(valid_rows)
-    else:
-        lines.append("+,SKIP,SKIP,ENDT")
+            fields.extend([_fmt_real_8(float(f)), _fmt_real_8(float(g))])
+    if not fields:
+        fields = [f"{'SKIP':>8s}", f"{'SKIP':>8s}"]
+    while fields:
+        chunk = fields[:6]
+        fields = fields[6:]
+        if not fields:
+            chunk.append(f"{'ENDT':>8s}")
+        lines.append(" " * 8 + "".join(chunk))
     return "\n".join(lines)
 
 
@@ -145,27 +171,26 @@ def tabled1_re_im_snippets(
     """Two TABLED1 tables for real and imaginary part of scalar F(f)."""
     F = np.asarray(F_complex, dtype=np.complex128).ravel() * scale
     f = np.asarray(freqs_hz, dtype=np.float64).ravel()
-    lines = [f"TABLED1,{tid_re},LINEAR,LINEAR"]
-    real_rows: list[str] = []
-    for fi, z in zip(f, F.real):
-        if np.isfinite(fi) and np.isfinite(z):
-            real_rows.append(f"+,{_fmt_real(float(fi))},{_fmt_real(float(z))}")
-    if real_rows:
-        real_rows[-1] += ",ENDT"
-        lines.extend(real_rows)
-    else:
-        lines.append("+,SKIP,SKIP,ENDT")
-    lines.append(f"TABLED1,{tid_im},LINEAR,LINEAR")
-    imag_rows: list[str] = []
-    for fi, z in zip(f, F.imag):
-        if np.isfinite(fi) and np.isfinite(z):
-            imag_rows.append(f"+,{_fmt_real(float(fi))},{_fmt_real(float(z))}")
-    if imag_rows:
-        imag_rows[-1] += ",ENDT"
-        lines.extend(imag_rows)
-    else:
-        lines.append("+,SKIP,SKIP,ENDT")
-    return "\n".join(lines)
+    real_rows = _tabled1_fixed_rows(tid_re, f, F.real)
+    imag_rows = _tabled1_fixed_rows(tid_im, f, F.imag)
+    return "\n".join(real_rows + imag_rows)
+
+
+def _tabled1_fixed_rows(tid: int, x: np.ndarray, y: np.ndarray) -> list[str]:
+    lines = [f"{'TABLED1':<8s}{tid:>8d}{'LINEAR':>8s}{'LINEAR':>8s}"]
+    fields: list[str] = []
+    for xi, yi in zip(x, y):
+        if np.isfinite(xi) and np.isfinite(yi):
+            fields.extend([_fmt_real_8(float(xi)), _fmt_real_8(float(yi))])
+    if not fields:
+        fields = [f"{'SKIP':>8s}", f"{'SKIP':>8s}"]
+    while fields:
+        chunk = fields[:6]
+        fields = fields[6:]
+        if not fields:
+            chunk.append(f"{'ENDT':>8s}")
+        lines.append(" " * 8 + "".join(chunk))
+    return lines
 
 
 def psd_from_force_fft(

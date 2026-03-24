@@ -2208,15 +2208,22 @@ end
 
 
 function write_nastran_tabled1_block(fid, tid, x_values, y_values)
-    fprintf(fid, 'TABLED1,%d,LINEAR,LINEAR\n', tid);
-    for idx = 1:numel(x_values)
-        if idx == numel(x_values)
-            fprintf(fid, '+,%s,%s,ENDT\n', ...
-                format_nastran_real(x_values(idx)), format_nastran_real(y_values(idx)));
-        else
-            fprintf(fid, '+,%s,%s\n', ...
-                format_nastran_real(x_values(idx)), format_nastran_real(y_values(idx)));
+    fprintf(fid, '%-8s%8d%8s%8s\n', 'TABLED1', tid, 'LINEAR', 'LINEAR');
+
+    n_pairs = numel(x_values);
+    pair_idx = 1;
+    while pair_idx <= n_pairs
+        line = repmat(' ', 1, 8);
+        n_pairs_this_line = min(3, n_pairs - pair_idx + 1);
+        for local_idx = 1:n_pairs_this_line
+            idx = pair_idx + local_idx - 1;
+            line = [line, format_nastran_fixed8_real(x_values(idx)), format_nastran_fixed8_real(y_values(idx))]; %#ok<AGROW>
         end
+        if pair_idx + n_pairs_this_line - 1 == n_pairs
+            line = [line, sprintf('%8s', 'ENDT')]; %#ok<AGROW>
+        end
+        fprintf(fid, '%s\n', line);
+        pair_idx = pair_idx + n_pairs_this_line;
     end
 end
 
@@ -2460,4 +2467,42 @@ function text = format_nastran_real(value)
         error('NASTRAN export only supports finite real values.');
     end
     text = sprintf('%.16E', value);
+end
+
+
+function text = format_nastran_fixed8_real(value)
+    if ~isfinite(value)
+        error('NASTRAN export only supports finite real values.');
+    end
+
+    candidates = {
+        sprintf('%.7g', value), ...
+        sprintf('%.6g', value), ...
+        sprintf('%.5g', value), ...
+        sprintf('%.1E', value)
+    };
+
+    for idx = 1:numel(candidates)
+        token = normalize_nastran_fixed8_token(candidates{idx});
+        if numel(token) <= 8
+            text = sprintf('%8s', token);
+            return;
+        end
+    end
+
+    error('Could not format %.16g into an 8-character NASTRAN real field.', value);
+end
+
+
+function token = normalize_nastran_fixed8_token(token)
+    token = strtrim(token);
+    token = strrep(token, 'e', 'E');
+    if startsWith(token, '0.')
+        token = token(2:end);
+    elseif startsWith(token, '-0.')
+        token = ['-' token(3:end)];
+    end
+    if isempty(regexp(token, '[\.E]', 'once'))
+        token = [token '.'];
+    end
 end
