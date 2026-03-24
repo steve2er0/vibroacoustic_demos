@@ -26,6 +26,8 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 %       t_end                 analysis end time [s], default = last sample
 %       g0                    standard gravity, default = 9.80665
 %       tikhonov_lambda       force regularization lambda, default = 0
+%       highpass_hz           optional high-pass cutoff [Hz], default = []
+%       highpass_order        high-pass filter order, default = 4
 %       mobility_is_si        true if H is already (m/s)/N, default = false
 %       skip_zero_hz          skip the DC bin, default = true
 %       f_min_hz              optional lower analysis limit
@@ -33,6 +35,10 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 %       fft_window            'hann' or 'boxcar', default = 'hann'
 %       plot_results          plot reconstructed forces + diagnostics, default = false
 %       plot_channel_idx      1-based channel index for acceleration comparison plots, default = 1
+%       plot_all_channels     also plot all-channel measured/predicted overlays, default = true
+%       plot_lambda_sweep     plot lambda sweep summary, default = false
+%       lambda_sweep_values   lambda values for the sweep, default = [0 1e-9 1e-8 1e-7 1e-6 1e-5]
+%       lambda_sweep_max_bins maximum bins used in the lambda sweep summary, default = 2000
 %       verbose               print summary metrics, default = true
 %       show_progress         print stage progress and timings, default = verbose
 %       progress_interval_sec progress update period during solve loop, default = 2.0
@@ -44,7 +50,9 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 %       Struct aligned with the Python pipeline fields:
 %       freqs_hz, F_hat, a_meas_fft, a_pred_fft, cond_number,
 %       singular_values, mac_xy, mac_xz, mac_yz, response_mac,
-%       relative_residual, valid_mask, fs_hz, t_start, t_end
+%       relative_residual, valid_mask, fs_hz, t_start, t_end,
+%       selected measured/predicted accelerations, preprocessing info,
+%       and optional lambda-sweep diagnostics
 %   inputs
 %       Loaded source data and resolved options. When plot_results=true,
 %       MATLAB also compares the measured and reconstructed acceleration
@@ -112,6 +120,19 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
             ~isfinite(opts.plot_channel_idx) || opts.plot_channel_idx < 1 || ...
             opts.plot_channel_idx > size(acc_g, 2) || opts.plot_channel_idx ~= round(opts.plot_channel_idx)
         error('opts.plot_channel_idx must be an integer from 1 to %d.', size(acc_g, 2));
+    end
+
+    acc_g_raw = acc_g;
+    stage_timer = tic;
+    [acc_g, preprocessing] = preprocess_flight_acceleration(time_s, acc_g_raw, opts, progress_enabled);
+    timing.preprocess_sec = toc(stage_timer);
+    if preprocessing.highpass_enabled
+        log_progress(progress_enabled, ...
+            'Applied %d-pole high-pass filter at %.3f Hz (%s) in %s.\n', ...
+            preprocessing.highpass_order, preprocessing.highpass_hz, preprocessing.method, ...
+            format_duration(timing.preprocess_sec));
+    else
+        log_progress(progress_enabled, 'No high-pass filter applied.\n');
     end
 
     time_mask = time_s >= opts.t_start & time_s <= opts.t_end;
@@ -239,6 +260,23 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
         log_progress(progress_enabled, 'Completed frequency solve in %s.\n', format_duration(timing.solve_sec));
     end
 
+    acc_pred_sel_si = real(irfft_matrix(a_pred_fft, numel(time_sel)));
+    acc_pred_sel_g = acc_pred_sel_si / opts.g0;
+
+    lambda_sweep = struct();
+    if opts.plot_lambda_sweep
+        stage_timer = tic;
+        log_progress(progress_enabled, 'Evaluating lambda sweep diagnostics...\n');
+        lambda_sweep = evaluate_lambda_sweep(A_fft, a_meas_fft, freqs_hz, solve_indices, n_sensors, opts, progress_enabled);
+        timing.lambda_sweep_sec = toc(stage_timer);
+        if isfield(lambda_sweep, 'n_eval_bins') && lambda_sweep.n_eval_bins > 0
+            log_progress(progress_enabled, 'Evaluated lambda sweep using %d bins in %s.\n', ...
+                lambda_sweep.n_eval_bins, format_duration(timing.lambda_sweep_sec));
+        else
+            log_progress(progress_enabled, 'Skipped lambda sweep because no valid bins were available.\n');
+        end
+    end
+
     result = struct();
     result.freqs_hz = freqs_hz;
     result.F_hat = F_hat;
@@ -255,6 +293,13 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     result.fs_hz = fs_hz;
     result.t_start = opts.t_start;
     result.t_end = opts.t_end;
+    result.time_sel_s = time_sel;
+    result.acc_meas_sel_g = acc_sel_g;
+    result.acc_meas_sel_si = acc_sel_si;
+    result.acc_pred_sel_g = acc_pred_sel_g;
+    result.acc_pred_sel_si = acc_pred_sel_si;
+    result.preprocessing = preprocessing;
+    result.lambda_sweep = lambda_sweep;
     timing.reconstruction_sec = toc(overall_timer);
     result.timing = timing;
 
@@ -267,10 +312,12 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     inputs.flight_input_type = flight_input_type;
     inputs.frf_freqs_hz = frf_freqs_hz;
     inputs.H_input = H_input;
+    inputs.acc_g_raw = acc_g_raw;
     inputs.time_s = time_s;
     inputs.acc_g = acc_g;
     inputs.channel_names = channel_names;
     inputs.options = opts;
+    inputs.preprocessing = preprocessing;
     inputs.timing = timing;
 
     if ~isempty(opts.save_force_csv)
@@ -308,6 +355,8 @@ function opts = resolve_options(opts, time_s)
     defaults.t_end = time_s(end);
     defaults.g0 = 9.80665;
     defaults.tikhonov_lambda = 0.0;
+    defaults.highpass_hz = [];
+    defaults.highpass_order = 4;
     defaults.mobility_is_si = false;
     defaults.skip_zero_hz = true;
     defaults.f_min_hz = [];
@@ -315,6 +364,10 @@ function opts = resolve_options(opts, time_s)
     defaults.fft_window = 'hann';
     defaults.plot_results = false;
     defaults.plot_channel_idx = 1;
+    defaults.plot_all_channels = true;
+    defaults.plot_lambda_sweep = false;
+    defaults.lambda_sweep_values = [0, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5];
+    defaults.lambda_sweep_max_bins = 2000;
     defaults.verbose = true;
     defaults.show_progress = [];
     defaults.progress_interval_sec = 2.0;
@@ -334,9 +387,162 @@ function opts = resolve_options(opts, time_s)
     else
         opts.show_progress = logical(opts.show_progress);
     end
+    opts.plot_all_channels = logical(opts.plot_all_channels);
+    opts.plot_lambda_sweep = logical(opts.plot_lambda_sweep);
+
+    if ~isempty(opts.highpass_hz)
+        if ~isscalar(opts.highpass_hz) || ~isnumeric(opts.highpass_hz) || ...
+                ~isfinite(opts.highpass_hz) || opts.highpass_hz < 0
+            error('opts.highpass_hz must be empty or a non-negative finite scalar.');
+        end
+        if opts.highpass_hz == 0
+            opts.highpass_hz = [];
+        end
+    end
+    if ~isscalar(opts.highpass_order) || ~isnumeric(opts.highpass_order) || ...
+            ~isfinite(opts.highpass_order) || opts.highpass_order < 1 || ...
+            opts.highpass_order ~= round(opts.highpass_order)
+        error('opts.highpass_order must be a positive integer.');
+    end
+    if ~isnumeric(opts.lambda_sweep_values) || any(~isfinite(opts.lambda_sweep_values(:))) || ...
+            any(opts.lambda_sweep_values(:) < 0)
+        error('opts.lambda_sweep_values must be a numeric vector of non-negative finite values.');
+    end
+    opts.lambda_sweep_values = unique(double(opts.lambda_sweep_values(:)).', 'stable');
+    if ~isscalar(opts.lambda_sweep_max_bins) || ~isnumeric(opts.lambda_sweep_max_bins) || ...
+            ~isfinite(opts.lambda_sweep_max_bins) || opts.lambda_sweep_max_bins < 1 || ...
+            opts.lambda_sweep_max_bins ~= round(opts.lambda_sweep_max_bins)
+        error('opts.lambda_sweep_max_bins must be a positive integer.');
+    end
     if ~isscalar(opts.progress_interval_sec) || ~isnumeric(opts.progress_interval_sec) || ...
             ~isfinite(opts.progress_interval_sec) || opts.progress_interval_sec <= 0
         error('opts.progress_interval_sec must be a positive finite scalar.');
+    end
+end
+
+
+function [acc_out_g, preprocessing] = preprocess_flight_acceleration(time_s, acc_in_g, opts, progress_enabled)
+    acc_out_g = acc_in_g;
+    preprocessing = struct();
+    preprocessing.highpass_enabled = false;
+    preprocessing.highpass_hz = [];
+    preprocessing.highpass_order = opts.highpass_order;
+    preprocessing.method = 'none';
+    preprocessing.fs_hz = infer_fs(time_s);
+
+    if isempty(opts.highpass_hz)
+        return;
+    end
+
+    if opts.highpass_hz >= 0.5 * preprocessing.fs_hz
+        error('opts.highpass_hz must be below Nyquist (%.6f Hz).', 0.5 * preprocessing.fs_hz);
+    end
+
+    if progress_enabled
+        fprintf('Applying high-pass filter at %.3f Hz (order %d)...\n', opts.highpass_hz, opts.highpass_order);
+    end
+
+    if exist('butter', 'file') == 2 && exist('filtfilt', 'file') == 2
+        try
+            [b, a] = butter(opts.highpass_order, opts.highpass_hz / (0.5 * preprocessing.fs_hz), 'high');
+            acc_out_g = filtfilt(b, a, double(acc_in_g));
+            preprocessing.method = 'filtfilt';
+        catch
+            acc_out_g = zero_phase_fft_highpass(acc_in_g, preprocessing.fs_hz, opts.highpass_hz, opts.highpass_order);
+            preprocessing.method = 'fft_butterworth';
+        end
+    else
+        acc_out_g = zero_phase_fft_highpass(acc_in_g, preprocessing.fs_hz, opts.highpass_hz, opts.highpass_order);
+        preprocessing.method = 'fft_butterworth';
+    end
+
+    preprocessing.highpass_enabled = true;
+    preprocessing.highpass_hz = opts.highpass_hz;
+end
+
+
+function filtered = zero_phase_fft_highpass(x, fs_hz, cutoff_hz, order)
+    if isvector(x)
+        x = x(:);
+    end
+
+    n = size(x, 1);
+    n_channels = size(x, 2);
+    freqs_hz = (0:floor(n / 2)).' * (fs_hz / n);
+    transfer = zeros(numel(freqs_hz), 1);
+    positive_mask = freqs_hz > 0;
+    transfer(positive_mask) = 1.0 ./ sqrt(1.0 + (cutoff_hz ./ freqs_hz(positive_mask)) .^ (2 * order));
+
+    if mod(n, 2) == 0
+        mirrored = transfer(end-1:-1:2);
+    else
+        mirrored = transfer(end:-1:2);
+    end
+    transfer_full = [transfer; mirrored];
+
+    filtered = zeros(n, n_channels);
+    for channel_idx = 1:n_channels
+        X = fft(double(x(:, channel_idx)));
+        filtered(:, channel_idx) = real(ifft(X .* transfer_full));
+    end
+end
+
+
+function lambda_sweep = evaluate_lambda_sweep(A_fft, a_meas_fft, freqs_hz, solve_indices, n_sensors, opts, progress_enabled)
+    lambda_sweep = struct();
+    lambda_sweep.lambda_values = opts.lambda_sweep_values(:);
+    lambda_sweep.n_eval_bins = 0;
+    lambda_sweep.eval_freqs_hz = [];
+    lambda_sweep.median_response_mac = [];
+    lambda_sweep.median_relative_residual = [];
+    lambda_sweep.median_force_norm = [];
+
+    if isempty(solve_indices) || isempty(opts.lambda_sweep_values)
+        return;
+    end
+
+    n_eval = min(numel(solve_indices), opts.lambda_sweep_max_bins);
+    eval_positions = unique(round(linspace(1, numel(solve_indices), n_eval)));
+    eval_indices = solve_indices(eval_positions);
+    lambda_values = opts.lambda_sweep_values(:);
+
+    lambda_sweep.n_eval_bins = numel(eval_indices);
+    lambda_sweep.eval_freqs_hz = freqs_hz(eval_indices);
+    lambda_sweep.median_response_mac = NaN(numel(lambda_values), 1);
+    lambda_sweep.median_relative_residual = NaN(numel(lambda_values), 1);
+    lambda_sweep.median_force_norm = NaN(numel(lambda_values), 1);
+
+    for lambda_idx = 1:numel(lambda_values)
+        lam = lambda_values(lambda_idx);
+        if progress_enabled
+            fprintf('  Lambda sweep %d/%d: lambda = %s\n', ...
+                lambda_idx, numel(lambda_values), format_lambda_value(lam));
+        end
+
+        response_mac_values = NaN(numel(eval_indices), 1);
+        relative_residual_values = NaN(numel(eval_indices), 1);
+        force_norm_values = NaN(numel(eval_indices), 1);
+
+        for eval_idx = 1:numel(eval_indices)
+            k = eval_indices(eval_idx);
+            Ak = reshape(A_fft(k, :, :), n_sensors, 3);
+            ak = a_meas_fft(k, :).';
+            Fk = solve_force_complex(Ak, ak, lam);
+            a_pred = Ak * Fk;
+
+            response_mac_values(eval_idx) = response_mac(ak, a_pred);
+            denom = norm(ak);
+            if denom > 0
+                relative_residual_values(eval_idx) = norm(a_pred - ak) / denom;
+            else
+                relative_residual_values(eval_idx) = 0.0;
+            end
+            force_norm_values(eval_idx) = norm(Fk);
+        end
+
+        lambda_sweep.median_response_mac(lambda_idx) = median_finite(response_mac_values);
+        lambda_sweep.median_relative_residual(lambda_idx) = median_finite(relative_residual_values);
+        lambda_sweep.median_force_norm(lambda_idx) = median_finite(force_norm_values);
     end
 end
 
@@ -801,10 +1007,17 @@ function print_summary(result)
     fprintf('\n');
     fprintf('Force reconstruction from flight input\n');
     fprintf('-------------------------------------\n');
+    if isfield(result, 'preprocessing') && result.preprocessing.highpass_enabled
+        fprintf('High-pass filter            : %d-pole %.3f Hz (%s)\n', ...
+            result.preprocessing.highpass_order, result.preprocessing.highpass_hz, result.preprocessing.method);
+    end
     fprintf('Valid frequency bins         : %d / %d\n', nnz(valid), numel(valid));
     fprintf('Median response MAC          : %.6f\n', median_finite(result.response_mac(valid)));
     fprintf('Median relative residual     : %.6f\n', median_finite(result.relative_residual(valid)));
     fprintf('Median condition number      : %.6f\n', median_finite(result.cond_number(valid)));
+    if isfield(result, 'lambda_sweep') && isfield(result.lambda_sweep, 'n_eval_bins') && result.lambda_sweep.n_eval_bins > 0
+        fprintf('Lambda sweep eval bins       : %d\n', result.lambda_sweep.n_eval_bins);
+    end
     if isfield(result, 'timing')
         if isfield(result.timing, 'solve_sec')
             fprintf('Solve time                  : %s\n', format_duration(result.timing.solve_sec));
@@ -917,21 +1130,63 @@ function plot_reconstruction_results(result, inputs)
     title('Matrix conditioning');
     grid on;
 
+    plot_single_channel_comparison(result, inputs);
+    if inputs.options.plot_all_channels
+        plot_all_channel_comparison(result, inputs);
+    end
+    if inputs.options.plot_lambda_sweep && isfield(result, 'lambda_sweep') && ...
+            isfield(result.lambda_sweep, 'n_eval_bins') && result.lambda_sweep.n_eval_bins > 0
+        plot_lambda_sweep_figure(result.lambda_sweep);
+    end
+end
+
+
+function channel_name = resolve_plot_channel_name(channel_names, channel_idx)
+    if iscell(channel_names) && numel(channel_names) >= channel_idx && ~isempty(channel_names{channel_idx})
+        channel_name = channel_names{channel_idx};
+    else
+        channel_name = sprintf('ch%d', channel_idx - 1);
+    end
+end
+
+
+function [time_plot, data_plot] = downsample_series_for_plot(time_s, data, max_points)
+    n = numel(time_s);
+    time_s = time_s(:);
+    if isvector(data)
+        data = data(:);
+    elseif size(data, 1) ~= n && size(data, 2) == n
+        data = data.';
+    end
+
+    if n <= max_points
+        time_plot = time_s;
+        data_plot = data;
+        return;
+    end
+
+    idx = unique(round(linspace(1, n, max_points)));
+    time_plot = time_s(idx);
+    if isvector(data)
+        data_plot = data(idx);
+    else
+        data_plot = data(idx, :);
+    end
+end
+
+
+function plot_single_channel_comparison(result, inputs)
     plot_channel_idx = inputs.options.plot_channel_idx;
     channel_name = resolve_plot_channel_name(inputs.channel_names, plot_channel_idx);
-    time_mask = inputs.time_s >= result.t_start & inputs.time_s <= result.t_end;
-    time_sel = inputs.time_s(time_mask);
-    acc_meas_g = inputs.acc_g(time_mask, plot_channel_idx);
-    n_time = numel(time_sel);
-    acc_pred_si = irfft_matrix(result.a_pred_fft(:, plot_channel_idx), n_time);
-    acc_pred_si = real(acc_pred_si(:));
-    acc_pred_g = acc_pred_si / inputs.options.g0;
-    acc_meas_si = acc_meas_g * inputs.options.g0;
+    acc_meas_g = result.acc_meas_sel_g(:, plot_channel_idx);
+    acc_pred_g = result.acc_pred_sel_g(:, plot_channel_idx);
+    acc_meas_si = result.acc_meas_sel_si(:, plot_channel_idx);
+    acc_pred_si = result.acc_pred_sel_si(:, plot_channel_idx);
 
-    [time_plot, acc_meas_plot_g] = downsample_series_for_plot(time_sel, acc_meas_g, 5000);
-    [~, acc_pred_plot_g] = downsample_series_for_plot(time_sel, acc_pred_g, 5000);
+    [time_plot, acc_meas_plot_g] = downsample_series_for_plot(result.time_sel_s, acc_meas_g, 5000);
+    [~, acc_pred_plot_g] = downsample_series_for_plot(result.time_sel_s, acc_pred_g, 5000);
 
-    nperseg = min(256, max(32, floor(n_time / 4)));
+    nperseg = default_psd_nperseg(numel(result.time_sel_s));
     [freq_meas_psd, psd_meas] = welch_psd_1d(acc_meas_si, result.fs_hz, nperseg, [], inputs.options.fft_window);
     [freq_pred_psd, psd_pred] = welch_psd_1d(acc_pred_si, result.fs_hz, nperseg, [], inputs.options.fft_window);
 
@@ -961,26 +1216,111 @@ function plot_reconstruction_results(result, inputs)
 end
 
 
-function channel_name = resolve_plot_channel_name(channel_names, channel_idx)
-    if iscell(channel_names) && numel(channel_names) >= channel_idx && ~isempty(channel_names{channel_idx})
-        channel_name = channel_names{channel_idx};
-    else
-        channel_name = sprintf('ch%d', channel_idx - 1);
-    end
-end
-
-
-function [time_plot, data_plot] = downsample_series_for_plot(time_s, data, max_points)
-    n = numel(time_s);
-    if n <= max_points
-        time_plot = time_s(:);
-        data_plot = data(:);
+function plot_all_channel_comparison(result, inputs)
+    n_channels = size(result.acc_meas_sel_g, 2);
+    if n_channels == 0
         return;
     end
 
-    idx = unique(round(linspace(1, n, max_points)));
-    time_plot = time_s(idx);
-    data_plot = data(idx);
+    [time_plot, acc_meas_plot_g] = downsample_series_for_plot(result.time_sel_s, result.acc_meas_sel_g, 3000);
+    [~, acc_pred_plot_g] = downsample_series_for_plot(result.time_sel_s, result.acc_pred_sel_g, 3000);
+    nperseg = default_psd_nperseg(numel(result.time_sel_s));
+    colors = lines(max(n_channels, 1));
+    legend_handles = gobjects(n_channels, 1);
+
+    figure('Name', 'All Channel Acceleration Comparison', 'Color', 'w');
+
+    subplot(2, 1, 1);
+    hold on;
+    for channel_idx = 1:n_channels
+        legend_handles(channel_idx) = plot(time_plot, acc_meas_plot_g(:, channel_idx), '-', ...
+            'Color', colors(channel_idx, :), 'LineWidth', 0.9);
+        plot(time_plot, acc_pred_plot_g(:, channel_idx), '--', ...
+            'Color', colors(channel_idx, :), 'LineWidth', 0.9);
+    end
+    hold off;
+    xlabel('Time (s)');
+    ylabel('Acceleration (g)');
+    title('All channels: solid = measured, dashed = predicted');
+    grid on;
+    maybe_add_channel_legend(legend_handles, inputs.channel_names);
+
+    subplot(2, 1, 2);
+    hold on;
+    for channel_idx = 1:n_channels
+        [freq_meas_psd, psd_meas] = welch_psd_1d(result.acc_meas_sel_si(:, channel_idx), result.fs_hz, nperseg, [], inputs.options.fft_window);
+        [freq_pred_psd, psd_pred] = welch_psd_1d(result.acc_pred_sel_si(:, channel_idx), result.fs_hz, nperseg, [], inputs.options.fft_window);
+        loglog(freq_meas_psd, max(psd_meas, 1e-30), '-', 'Color', colors(channel_idx, :), 'LineWidth', 0.9);
+        loglog(freq_pred_psd, max(psd_pred, 1e-30), '--', 'Color', colors(channel_idx, :), 'LineWidth', 0.9);
+    end
+    hold off;
+    xlabel('Frequency (Hz)');
+    ylabel('(m/s^2)^2/Hz');
+    title('All channel PSDs: solid = measured, dashed = predicted');
+    grid on;
+end
+
+
+function plot_lambda_sweep_figure(lambda_sweep)
+    lambda_values = lambda_sweep.lambda_values(:);
+    lambda_plot = lambda_values;
+    positive_mask = lambda_plot > 0;
+    if any(positive_mask)
+        min_positive = min(lambda_plot(positive_mask));
+    else
+        min_positive = 1e-12;
+    end
+    lambda_plot(~positive_mask) = min_positive / 3.0;
+    tick_labels = arrayfun(@format_lambda_value, lambda_values, 'UniformOutput', false);
+
+    figure('Name', 'Lambda Sweep Diagnostics', 'Color', 'w');
+
+    subplot(3, 1, 1);
+    semilogx(lambda_plot, lambda_sweep.median_response_mac, 'o-', 'LineWidth', 1.2, 'MarkerSize', 6);
+    ylabel('Median MAC');
+    title(sprintf('Lambda sweep using %d evaluation bins', lambda_sweep.n_eval_bins));
+    grid on;
+    set(gca, 'XTick', lambda_plot, 'XTickLabel', tick_labels);
+
+    subplot(3, 1, 2);
+    semilogy(lambda_plot, max(lambda_sweep.median_relative_residual, 1e-16), 'o-', 'LineWidth', 1.2, 'MarkerSize', 6);
+    ylabel('Median residual');
+    grid on;
+    set(gca, 'XTick', lambda_plot, 'XTickLabel', tick_labels);
+
+    subplot(3, 1, 3);
+    semilogy(lambda_plot, max(lambda_sweep.median_force_norm, 1e-16), 'o-', 'LineWidth', 1.2, 'MarkerSize', 6);
+    xlabel('\lambda');
+    ylabel('Median ||F||');
+    grid on;
+    set(gca, 'XTick', lambda_plot, 'XTickLabel', tick_labels);
+end
+
+
+function maybe_add_channel_legend(legend_handles, channel_names)
+    if numel(legend_handles) > 10
+        return;
+    end
+
+    labels = cell(numel(legend_handles), 1);
+    for idx = 1:numel(legend_handles)
+        labels{idx} = resolve_plot_channel_name(channel_names, idx);
+    end
+    legend(legend_handles, labels, 'Location', 'eastoutside');
+end
+
+
+function nperseg = default_psd_nperseg(n_time)
+    nperseg = min(256, max(32, floor(n_time / 4)));
+end
+
+
+function text = format_lambda_value(value)
+    if value == 0
+        text = '0';
+    else
+        text = sprintf('%.0e', value);
+    end
 end
 
 

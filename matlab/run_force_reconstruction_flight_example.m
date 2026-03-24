@@ -52,9 +52,14 @@ opts.fft_window = 'hann';
 opts.tikhonov_lambda = 0.0;
 opts.plot_results = true;
 opts.plot_channel_idx = 1;
+opts.plot_all_channels = true;
+opts.plot_lambda_sweep = true;
 opts.verbose = true;
 opts.show_progress = true;
 opts.progress_interval_sec = 2.0;
+% Optional preprocessing for low-frequency vehicle motion / bias drift.
+% opts.highpass_hz = 2.0;
+% opts.highpass_order = 4;
 
 % Uncomment these to write CSV outputs from MATLAB.
 % opts.save_force_csv = fullfile(repoRoot, 'F_hat_spectrum_matlab.csv');
