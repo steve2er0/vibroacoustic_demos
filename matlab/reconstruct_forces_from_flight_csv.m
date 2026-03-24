@@ -37,6 +37,10 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 %       plot_channel_idx      1-based channel index for acceleration comparison plots, default = 1
 %       plot_all_channels     also plot all-channel measured/predicted overlays, default = true
 %       plot_psd_error_map    plot all-channel PSD dB-difference map, default = true
+%       plot_psd_xscale       'log' or 'linear', default = 'log'
+%       plot_psd_yscale       'log' or 'linear', default = 'log'
+%       plot_psd_fmin_hz      PSD plot lower x limit [Hz], default = 10
+%       plot_psd_fmax_hz      PSD plot upper x limit [Hz], default = 3000
 %       plot_lambda_sweep     plot lambda sweep summary, default = false
 %       lambda_sweep_values   lambda values for the sweep, default = [0 1e-9 1e-8 1e-7 1e-6 1e-5]
 %       lambda_sweep_max_bins maximum bins used in the lambda sweep summary, default = 2000
@@ -367,6 +371,10 @@ function opts = resolve_options(opts, time_s)
     defaults.plot_channel_idx = 1;
     defaults.plot_all_channels = true;
     defaults.plot_psd_error_map = true;
+    defaults.plot_psd_xscale = 'log';
+    defaults.plot_psd_yscale = 'log';
+    defaults.plot_psd_fmin_hz = 10.0;
+    defaults.plot_psd_fmax_hz = 3000.0;
     defaults.plot_lambda_sweep = false;
     defaults.lambda_sweep_values = [0, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5];
     defaults.lambda_sweep_max_bins = 2000;
@@ -392,6 +400,8 @@ function opts = resolve_options(opts, time_s)
     opts.plot_all_channels = logical(opts.plot_all_channels);
     opts.plot_psd_error_map = logical(opts.plot_psd_error_map);
     opts.plot_lambda_sweep = logical(opts.plot_lambda_sweep);
+    opts.plot_psd_xscale = validate_axis_scale_option(opts.plot_psd_xscale, 'opts.plot_psd_xscale');
+    opts.plot_psd_yscale = validate_axis_scale_option(opts.plot_psd_yscale, 'opts.plot_psd_yscale');
 
     if ~isempty(opts.highpass_hz)
         if ~isscalar(opts.highpass_hz) || ~isnumeric(opts.highpass_hz) || ...
@@ -416,6 +426,20 @@ function opts = resolve_options(opts, time_s)
             ~isfinite(opts.lambda_sweep_max_bins) || opts.lambda_sweep_max_bins < 1 || ...
             opts.lambda_sweep_max_bins ~= round(opts.lambda_sweep_max_bins)
         error('opts.lambda_sweep_max_bins must be a positive integer.');
+    end
+    if ~isscalar(opts.plot_psd_fmin_hz) || ~isnumeric(opts.plot_psd_fmin_hz) || ...
+            ~isfinite(opts.plot_psd_fmin_hz) || opts.plot_psd_fmin_hz < 0
+        error('opts.plot_psd_fmin_hz must be a non-negative finite scalar.');
+    end
+    if ~isscalar(opts.plot_psd_fmax_hz) || ~isnumeric(opts.plot_psd_fmax_hz) || ...
+            ~isfinite(opts.plot_psd_fmax_hz) || opts.plot_psd_fmax_hz <= 0
+        error('opts.plot_psd_fmax_hz must be a positive finite scalar.');
+    end
+    if opts.plot_psd_fmax_hz < opts.plot_psd_fmin_hz
+        error('opts.plot_psd_fmax_hz must be >= opts.plot_psd_fmin_hz.');
+    end
+    if strcmp(opts.plot_psd_xscale, 'log') && opts.plot_psd_fmin_hz <= 0
+        error('opts.plot_psd_fmin_hz must be > 0 when opts.plot_psd_xscale is "log".');
     end
     if ~isscalar(opts.progress_interval_sec) || ~isnumeric(opts.progress_interval_sec) || ...
             ~isfinite(opts.progress_interval_sec) || opts.progress_interval_sec <= 0
@@ -1183,6 +1207,8 @@ function plot_single_channel_comparison(result, inputs)
     channel_name = resolve_plot_channel_name(inputs.channel_names, plot_channel_idx);
     acc_meas_g = result.acc_meas_sel_g(:, plot_channel_idx);
     acc_pred_g = result.acc_pred_sel_g(:, plot_channel_idx);
+    rms_meas_g = compute_rms_value(acc_meas_g);
+    rms_pred_g = compute_rms_value(acc_pred_g);
 
     [time_plot, acc_meas_plot_g] = downsample_series_for_plot(result.time_sel_s, acc_meas_g, 5000);
     [~, acc_pred_plot_g] = downsample_series_for_plot(result.time_sel_s, acc_pred_g, 5000);
@@ -1190,6 +1216,12 @@ function plot_single_channel_comparison(result, inputs)
     nperseg = default_psd_nperseg(numel(result.time_sel_s));
     [freq_meas_psd, psd_meas] = welch_psd_1d(acc_meas_g, result.fs_hz, nperseg, [], inputs.options.fft_window);
     [freq_pred_psd, psd_pred] = welch_psd_1d(acc_pred_g, result.fs_hz, nperseg, [], inputs.options.fft_window);
+    psd_meas_plus_3db = psd_meas * db_power_ratio(3.0);
+    psd_meas_minus_3db = psd_meas / db_power_ratio(3.0);
+    [freq_plot, psd_meas_plot] = prepare_psd_curve_for_plot(freq_meas_psd, psd_meas, inputs.options);
+    [freq_pred_plot, psd_pred_plot] = prepare_psd_curve_for_plot(freq_pred_psd, psd_pred, inputs.options);
+    [freq_plus_plot, psd_meas_plus_plot] = prepare_psd_curve_for_plot(freq_meas_psd, psd_meas_plus_3db, inputs.options);
+    [freq_minus_plot, psd_meas_minus_plot] = prepare_psd_curve_for_plot(freq_meas_psd, psd_meas_minus_3db, inputs.options);
 
     figure('Name', 'Measured vs Predicted Acceleration', 'Color', 'w');
 
@@ -1205,14 +1237,17 @@ function plot_single_channel_comparison(result, inputs)
     grid on;
 
     subplot(2, 1, 2);
-    loglog(freq_meas_psd, max(psd_meas, 1e-30), 'b-', 'LineWidth', 1.0);
     hold on;
-    loglog(freq_pred_psd, max(psd_pred, 1e-30), 'r--', 'LineWidth', 1.0);
+    plot(freq_plot, psd_meas_plot, 'b-', 'LineWidth', 1.0);
+    plot(freq_pred_plot, psd_pred_plot, 'r--', 'LineWidth', 1.0);
+    plot(freq_plus_plot, psd_meas_plus_plot, 'k:', 'LineWidth', 0.9);
+    plot(freq_minus_plot, psd_meas_minus_plot, 'k:', 'LineWidth', 0.9);
     hold off;
+    apply_psd_axes(gca, inputs.options);
     xlabel('Frequency (Hz)');
     ylabel('g^2/Hz');
     title(sprintf('Acceleration PSD — %s', channel_name));
-    legend('Measured', 'Predicted', 'Location', 'best');
+    legend(build_psd_legend_labels(rms_meas_g, rms_pred_g), 'Location', 'best');
     grid on;
 end
 
@@ -1247,19 +1282,18 @@ function plot_all_channel_comparison(result, inputs)
     maybe_add_channel_legend(legend_handles, inputs.channel_names);
 
     subplot(2, 1, 2);
-    hold on;
-    for channel_idx = 1:n_channels
-        loglog(freq_psd, max(meas_psd_g(:, channel_idx), 1e-30), '-', 'Color', colors(channel_idx, :), 'LineWidth', 0.9);
-        loglog(freq_psd, max(pred_psd_g(:, channel_idx), 1e-30), '--', 'Color', colors(channel_idx, :), 'LineWidth', 0.9);
-    end
-    hold off;
-    xlabel('Frequency (Hz)');
-    ylabel('g^2/Hz');
-    title('All channel PSDs: solid = measured, dashed = predicted');
-    grid on;
+    axis off;
+    text(0.5, 0.5, sprintf('Channel-by-channel PSD comparison is shown in a separate figure.\nX range: %.1f to %.1f Hz, X scale: %s, Y scale: %s', ...
+        inputs.options.plot_psd_fmin_hz, inputs.options.plot_psd_fmax_hz, ...
+        upper(inputs.options.plot_psd_xscale), upper(inputs.options.plot_psd_yscale)), ...
+        'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', 'FontSize', 10);
+    title('PSD comparison');
+
+    plot_all_channel_psd_subplots(freq_psd, meas_psd_g, pred_psd_g, ...
+        result.acc_meas_sel_g, result.acc_pred_sel_g, inputs);
 
     if inputs.options.plot_psd_error_map
-        plot_all_channel_psd_error_map(freq_psd, db_diff, inputs.channel_names);
+        plot_all_channel_psd_error_map(freq_psd, db_diff, inputs.channel_names, inputs.options);
     end
 end
 
@@ -1292,7 +1326,48 @@ function [freq_psd, meas_psd_g, pred_psd_g, db_diff] = compute_all_channel_psd_d
 end
 
 
-function plot_all_channel_psd_error_map(freq_psd, db_diff, channel_names)
+function plot_all_channel_psd_subplots(freq_psd, meas_psd_g, pred_psd_g, acc_meas_sel_g, acc_pred_sel_g, inputs)
+    if isempty(freq_psd) || isempty(meas_psd_g) || isempty(pred_psd_g)
+        return;
+    end
+
+    n_channels = size(meas_psd_g, 2);
+    n_cols = ceil(sqrt(n_channels));
+    n_rows = ceil(n_channels / n_cols);
+    guide_scale = db_power_ratio(3.0);
+
+    figure('Name', 'All Channel PSD Comparison', 'Color', 'w');
+    for channel_idx = 1:n_channels
+        subplot(n_rows, n_cols, channel_idx);
+        rms_meas_g = compute_rms_value(acc_meas_sel_g(:, channel_idx));
+        rms_pred_g = compute_rms_value(acc_pred_sel_g(:, channel_idx));
+        psd_meas = meas_psd_g(:, channel_idx);
+        psd_pred = pred_psd_g(:, channel_idx);
+        psd_meas_plus_3db = psd_meas * guide_scale;
+        psd_meas_minus_3db = psd_meas / guide_scale;
+
+        [freq_plot, psd_meas_plot] = prepare_psd_curve_for_plot(freq_psd, psd_meas, inputs.options);
+        [freq_pred_plot, psd_pred_plot] = prepare_psd_curve_for_plot(freq_psd, psd_pred, inputs.options);
+        [freq_plus_plot, psd_meas_plus_plot] = prepare_psd_curve_for_plot(freq_psd, psd_meas_plus_3db, inputs.options);
+        [freq_minus_plot, psd_meas_minus_plot] = prepare_psd_curve_for_plot(freq_psd, psd_meas_minus_3db, inputs.options);
+
+        hold on;
+        plot(freq_plot, psd_meas_plot, 'b-', 'LineWidth', 1.0);
+        plot(freq_pred_plot, psd_pred_plot, 'r--', 'LineWidth', 1.0);
+        plot(freq_plus_plot, psd_meas_plus_plot, 'k:', 'LineWidth', 0.8);
+        plot(freq_minus_plot, psd_meas_minus_plot, 'k:', 'LineWidth', 0.8);
+        hold off;
+        apply_psd_axes(gca, inputs.options);
+        grid on;
+        title(resolve_plot_channel_name(inputs.channel_names, channel_idx), 'Interpreter', 'none');
+        xlabel('Frequency (Hz)');
+        ylabel('g^2/Hz');
+        legend(build_psd_legend_labels(rms_meas_g, rms_pred_g), 'Location', 'best', 'FontSize', 8);
+    end
+end
+
+
+function plot_all_channel_psd_error_map(freq_psd, db_diff, channel_names, opts)
     if isempty(freq_psd) || isempty(db_diff)
         return;
     end
@@ -1319,6 +1394,7 @@ function plot_all_channel_psd_error_map(freq_psd, db_diff, channel_names)
     cb.Ticks = [-2, -1, 0, 1, 2];
     cb.TickLabels = {'< -6 dB', '-6 to -3 dB', '+/- 3 dB', '+3 to +6 dB', '> +6 dB'};
     set(gca, 'YTick', 1:n_channels, 'YTickLabel', build_channel_axis_labels(channel_names, n_channels));
+    xlim([opts.plot_psd_fmin_hz, opts.plot_psd_fmax_hz]);
 
     subplot(2, 1, 2);
     imagesc(freq_psd, 1:n_channels, db_diff.');
@@ -1330,6 +1406,7 @@ function plot_all_channel_psd_error_map(freq_psd, db_diff, channel_names)
     caxis([-12 12]);
     colorbar;
     set(gca, 'YTick', 1:n_channels, 'YTickLabel', build_channel_axis_labels(channel_names, n_channels));
+    xlim([opts.plot_psd_fmin_hz, opts.plot_psd_fmax_hz]);
 end
 
 
@@ -1392,6 +1469,56 @@ end
 
 function nperseg = default_psd_nperseg(n_time)
     nperseg = min(256, max(32, floor(n_time / 4)));
+end
+
+
+function labels = build_psd_legend_labels(rms_meas_g, rms_pred_g)
+    labels = { ...
+        sprintf('Measured RMS = %.4g g', rms_meas_g), ...
+        sprintf('Predicted RMS = %.4g g', rms_pred_g), ...
+        'Measured +3 dB', ...
+        'Measured -3 dB'};
+end
+
+
+function rms_value = compute_rms_value(x)
+    x = double(x(:));
+    rms_value = sqrt(mean(x .^ 2));
+end
+
+
+function ratio = db_power_ratio(db_value)
+    ratio = 10.0 ^ (db_value / 10.0);
+end
+
+
+function [freq_plot, pxx_plot] = prepare_psd_curve_for_plot(freq_psd, pxx, opts)
+    freq_psd = freq_psd(:);
+    pxx = pxx(:);
+    mask = isfinite(freq_psd) & isfinite(pxx);
+    mask = mask & freq_psd >= opts.plot_psd_fmin_hz & freq_psd <= opts.plot_psd_fmax_hz;
+    if strcmp(opts.plot_psd_xscale, 'log')
+        mask = mask & freq_psd > 0;
+    end
+
+    if ~any(mask)
+        mask = isfinite(freq_psd) & isfinite(pxx);
+        if strcmp(opts.plot_psd_xscale, 'log')
+            mask = mask & freq_psd > 0;
+        end
+    end
+
+    freq_plot = freq_psd(mask);
+    pxx_plot = pxx(mask);
+    if strcmp(opts.plot_psd_yscale, 'log')
+        pxx_plot = max(pxx_plot, 1e-30);
+    end
+end
+
+
+function apply_psd_axes(ax, opts)
+    set(ax, 'XScale', opts.plot_psd_xscale, 'YScale', opts.plot_psd_yscale);
+    xlim(ax, [opts.plot_psd_fmin_hz, opts.plot_psd_fmax_hz]);
 end
 
 
@@ -1530,5 +1657,23 @@ function out = logical_to_int(value)
         out = 1;
     else
         out = 0;
+    end
+end
+
+
+function value = validate_axis_scale_option(value, arg_name)
+    if isstring(value)
+        if ~isscalar(value)
+            error('%s must be a scalar string or character vector.', arg_name);
+        end
+        value = char(value);
+    end
+    if ~ischar(value)
+        error('%s must be ''log'' or ''linear''.', arg_name);
+    end
+
+    value = lower(strtrim(value));
+    if ~strcmp(value, 'log') && ~strcmp(value, 'linear')
+        error('%s must be ''log'' or ''linear''.', arg_name);
     end
 end
