@@ -7,6 +7,12 @@ from pathlib import Path
 import numpy as np
 
 
+def _fmt_real(value: float) -> str:
+    if not np.isfinite(value):
+        raise ValueError("NASTRAN export only supports finite real values.")
+    return f"{value:.16E}"
+
+
 def write_force_spectrum_csv(
     freqs_hz: np.ndarray,
     F_hat: np.ndarray,
@@ -115,11 +121,11 @@ def tabrnd1_snippet(
 
     psd: one-sided force PSD (N^2/Hz or lbf^2/Hz) same length as freqs.
     """
-    lines = [f"TABRND1 {tid} {xaxis} {yaxis}"]
-    for f, g in zip(freqs_hz, psd, strict=False):
+    lines = [f"TABRND1,{tid},{xaxis},{yaxis}"]
+    for f, g in zip(freqs_hz, psd):
         if np.isfinite(f) and np.isfinite(g) and g >= 0:
-            lines.append(f"        {f:.6e} {g:.6e}")
-    lines.append("ENDT")
+            lines.append(f"+,{_fmt_real(float(f))},{_fmt_real(float(g))}")
+    lines.append("+,ENDT")
     return "\n".join(lines)
 
 
@@ -134,16 +140,16 @@ def tabled1_re_im_snippets(
     """Two TABLED1 tables for real and imaginary part of scalar F(f)."""
     F = np.asarray(F_complex, dtype=np.complex128).ravel() * scale
     f = np.asarray(freqs_hz, dtype=np.float64).ravel()
-    lines = [f"TABLED1 {tid_re}"]
-    for fi, z in zip(f, F.real, strict=False):
+    lines = [f"TABLED1,{tid_re},LINEAR,LINEAR"]
+    for fi, z in zip(f, F.real):
         if np.isfinite(fi) and np.isfinite(z):
-            lines.append(f"        {fi:.6e} {z:.6e}")
-    lines.append("ENDT")
-    lines.append(f"TABLED1 {tid_im}")
-    for fi, z in zip(f, F.imag, strict=False):
+            lines.append(f"+,{_fmt_real(float(fi))},{_fmt_real(float(z))}")
+    lines.append("+,ENDT")
+    lines.append(f"TABLED1,{tid_im},LINEAR,LINEAR")
+    for fi, z in zip(f, F.imag):
         if np.isfinite(fi) and np.isfinite(z):
-            lines.append(f"        {fi:.6e} {z:.6e}")
-    lines.append("ENDT")
+            lines.append(f"+,{_fmt_real(float(fi))},{_fmt_real(float(z))}")
+    lines.append("+,ENDT")
     return "\n".join(lines)
 
 

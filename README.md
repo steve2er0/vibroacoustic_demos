@@ -97,6 +97,7 @@ The MATLAB pipeline runs the same windowed frequency-by-frequency inversion and 
 - `F_hat_spectrum.csv`
 - `reconstruction_diagnostics.csv`
 - a NASTRAN `TABLED1` include file with real/imaginary force spectra in `N` or `lbf`
+- a SOL111 replay-deck skeleton with `DAREA`, `RLOAD1`, `DLOAD`, and the `TABLED1` include
 
 When `plot_results=true`, MATLAB now also opens a measured-versus-predicted acceleration
 comparison for a selected response channel, using the reconstructed forces to synthesize
@@ -135,8 +136,14 @@ opts = struct( ...
     'psd_nperseg', 2048, ...
     'plot_lambda_sweep', true, ...
     'save_nastran_tabled1', 'reconstructed_forces_nastran.inc', ...
+    'save_nastran_replay_bdf', 'reconstructed_forces_replay.bdf', ...
     'nastran_force_unit', 'lbf', ...
     'nastran_table_id_start', 1001, ...
+    'nastran_grid_ids', 5000, ...
+    'nastran_spc_sid', 1, ...
+    'nastran_method_sid', 10, ...
+    'nastran_freq_sid', 30, ...
+    'nastran_sdamping_sid', 20, ...
     'show_progress', true, ...
     'progress_interval_sec', 2.0, ...
     'plot_results', true);
@@ -249,6 +256,13 @@ in an `lbf-in` SOL111 model, export with:
 The MATLAB exporter writes one real/imaginary `TABLED1` pair per reconstructed load case.
 Use all reconstructed load cases together in the same SOL111 replay run so the original
 complex phase relationship is preserved.
+
+If you also set `save_nastran_replay_bdf`, MATLAB writes a SOL111 replay-deck skeleton
+that references the exported `TABLED1` file and combines all reconstructed loads with
+one `DLOAD`. For the standard `Fx/Fy/Fz` case, a scalar `nastran_grid_ids` value is
+expanded automatically to one grid with components `1,2,3`. For a distributed load model,
+provide one `nastran_grid_ids` entry and one `nastran_components` entry per reconstructed
+load case.
 
 For workflow testing without measured FRFs, the Python GUIs and CLI also support a dummy `H = ones()` mode.
 
@@ -369,12 +383,31 @@ Practical guidance:
 - `save_nastran_tabled1`:
   - optional MATLAB-only path for a NASTRAN include file containing one real/imaginary `TABLED1` pair per reconstructed load case
   - only the valid solved frequency bins are written
+- `save_nastran_replay_bdf`:
+  - optional MATLAB-only path for a SOL111 replay-deck skeleton
+  - if `save_nastran_tabled1` is empty, MATLAB automatically writes a companion `*_tables.inc` file next to the replay deck
 - `nastran_force_unit`:
   - force unit used in the MATLAB NASTRAN export
   - use `'lbf'` for an `lbf-in` model or `'N'` for an SI model
 - `nastran_table_id_start`:
   - first `TABLED1` ID used by the MATLAB NASTRAN export
   - each load case consumes two IDs: one for the real part and one for the imaginary part
+- `nastran_grid_ids`:
+  - grid IDs used on the replay `DAREA` entries
+  - provide one scalar for the standard 3-load `Fx/Fy/Fz` case, or one value per reconstructed load case
+- `nastran_components`:
+  - component IDs used on the replay `DAREA` entries
+  - default = `[1 2 3]` for the standard 3-load case
+- `nastran_darea_scales`:
+  - optional `DAREA` scale factors for the replay deck
+  - default = `1.0` for each reconstructed load case because the `TABLED1` values already contain the reconstructed force amplitude
+- `nastran_darea_sid_start`, `nastran_rload_sid_start`, `nastran_dload_sid`:
+  - starting IDs used for the replay deck `DAREA`, `RLOAD1`, and `DLOAD` entries
+- `nastran_subcase_id`, `nastran_spc_sid`, `nastran_method_sid`, `nastran_freq_sid`, `nastran_sdamping_sid`:
+  - case-control IDs written into the replay deck skeleton
+  - adjust these to match your model setup
+- `nastran_title`, `nastran_model_include`:
+  - title and optional model `INCLUDE` path written into the replay deck skeleton
 
 #### Measured versus predicted acceleration
 

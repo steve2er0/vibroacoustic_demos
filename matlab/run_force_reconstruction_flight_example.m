@@ -97,6 +97,18 @@ opts.progress_interval_sec = 2.0;
 % opts.save_nastran_tabled1 = fullfile(repoRoot, 'reconstructed_forces_nastran.inc');
 % opts.nastran_force_unit = 'lbf';
 % opts.nastran_table_id_start = 1001;
+%
+% Uncomment these to also write a SOL111 replay-deck skeleton. For the
+% standard Fx/Fy/Fz case, you can provide one grid ID and MATLAB will map
+% the three reconstructed loads to components 1/2/3 on that grid.
+% opts.save_nastran_replay_bdf = fullfile(repoRoot, 'reconstructed_forces_replay.bdf');
+% opts.nastran_grid_ids = 5000;
+% opts.nastran_spc_sid = 1;
+% opts.nastran_method_sid = 10;
+% opts.nastran_freq_sid = 30;
+% opts.nastran_sdamping_sid = 20;
+% opts.nastran_title = 'Reconstructed Force Replay';
+% opts.nastran_model_include = 'your_model.bdf';
 
 [result, inputs] = reconstruct_forces_from_flight_data( ...
     mobilityInput, flightInput, opts);

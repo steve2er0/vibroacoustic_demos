@@ -66,10 +66,29 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
 %       save_force_csv        optional output path for F_hat CSV
 %       save_diagnostics_csv  optional output path for diagnostics CSV
 %       save_nastran_tabled1  optional output path for NASTRAN TABLED1 include
+%       save_nastran_replay_bdf optional output path for a SOL111 replay-deck skeleton
 %       nastran_force_unit    force units for NASTRAN export: 'N' or 'lbf',
 %                             default = 'N'
 %       nastran_table_id_start starting TABLED1 ID for NASTRAN export,
 %                              default = 1001
+%       nastran_grid_ids      scalar grid ID for the legacy 3-load case, or a
+%                             vector of grid IDs with one entry per load case
+%       nastran_components    optional component list for replay export.
+%                             Default = [1 2 3] for the legacy 3-load case
+%       nastran_darea_scales  optional DAREA scales for replay export,
+%                             default = 1.0 for each load case
+%       nastran_darea_sid_start starting DAREA SID for replay export,
+%                               default = 101
+%       nastran_rload_sid_start starting RLOAD1 SID for replay export,
+%                               default = 201
+%       nastran_dload_sid     DLOAD SID for replay export, default = 40
+%       nastran_subcase_id    replay subcase ID, default = 1
+%       nastran_spc_sid       SPC SID referenced in the replay deck, default = 1
+%       nastran_method_sid    METHOD SID referenced in the replay deck, default = 10
+%       nastran_freq_sid      FREQ SID referenced in the replay deck, default = 30
+%       nastran_sdamping_sid  optional SDAMPING SID for the replay deck, default = []
+%       nastran_title         replay deck title, default = 'Reconstructed Force Replay'
+%       nastran_model_include optional model INCLUDE path in the replay deck
 %
 % Outputs
 %   result
@@ -419,6 +438,23 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
         log_progress(progress_enabled, 'Wrote NASTRAN TABLED1 include in %s.\n', ...
             format_duration(toc(stage_timer)));
     end
+    if ~isempty(opts.save_nastran_replay_bdf)
+        stage_timer = tic;
+        log_progress(progress_enabled, 'Writing NASTRAN replay deck: %s\n', opts.save_nastran_replay_bdf);
+        nastran_tabled1_path = resolve_nastran_tabled1_output_path(opts.save_nastran_tabled1, opts.save_nastran_replay_bdf);
+        if isempty(opts.save_nastran_tabled1)
+            write_nastran_force_tabled1( ...
+                result.freqs_hz, result.F_hat, result.valid_mask, result.load_case_names, ...
+                nastran_tabled1_path, opts.nastran_force_unit, opts.nastran_table_id_start);
+            log_progress(progress_enabled, 'Auto-wrote companion NASTRAN TABLED1 include: %s\n', nastran_tabled1_path);
+        end
+        [nastran_grid_ids, nastran_components, nastran_darea_scales] = resolve_nastran_replay_dofs(opts, result);
+        write_nastran_replay_bdf( ...
+            opts.save_nastran_replay_bdf, nastran_tabled1_path, result.load_case_names, ...
+            nastran_grid_ids, nastran_components, nastran_darea_scales, opts);
+        log_progress(progress_enabled, 'Wrote NASTRAN replay deck in %s.\n', ...
+            format_duration(toc(stage_timer)));
+    end
     if opts.plot_results
         stage_timer = tic;
         log_progress(progress_enabled, 'Rendering MATLAB figures...\n');
@@ -471,8 +507,22 @@ function opts = resolve_options(opts, time_s)
     defaults.save_force_csv = '';
     defaults.save_diagnostics_csv = '';
     defaults.save_nastran_tabled1 = '';
+    defaults.save_nastran_replay_bdf = '';
     defaults.nastran_force_unit = 'N';
     defaults.nastran_table_id_start = 1001;
+    defaults.nastran_grid_ids = [];
+    defaults.nastran_components = [];
+    defaults.nastran_darea_scales = [];
+    defaults.nastran_darea_sid_start = 101;
+    defaults.nastran_rload_sid_start = 201;
+    defaults.nastran_dload_sid = 40;
+    defaults.nastran_subcase_id = 1;
+    defaults.nastran_spc_sid = 1;
+    defaults.nastran_method_sid = 10;
+    defaults.nastran_freq_sid = 30;
+    defaults.nastran_sdamping_sid = [];
+    defaults.nastran_title = 'Reconstructed Force Replay';
+    defaults.nastran_model_include = '';
 
     names = fieldnames(defaults);
     for idx = 1:numel(names)
@@ -559,6 +609,27 @@ function opts = resolve_options(opts, time_s)
             ~isfinite(opts.nastran_table_id_start) || opts.nastran_table_id_start < 1 || ...
             opts.nastran_table_id_start ~= round(opts.nastran_table_id_start)
         error('opts.nastran_table_id_start must be a positive integer.');
+    end
+    validate_positive_integer_option(opts.nastran_darea_sid_start, 'opts.nastran_darea_sid_start');
+    validate_positive_integer_option(opts.nastran_rload_sid_start, 'opts.nastran_rload_sid_start');
+    validate_positive_integer_option(opts.nastran_dload_sid, 'opts.nastran_dload_sid');
+    validate_positive_integer_option(opts.nastran_subcase_id, 'opts.nastran_subcase_id');
+    validate_positive_integer_option(opts.nastran_spc_sid, 'opts.nastran_spc_sid');
+    validate_positive_integer_option(opts.nastran_method_sid, 'opts.nastran_method_sid');
+    validate_positive_integer_option(opts.nastran_freq_sid, 'opts.nastran_freq_sid');
+    if ~isempty(opts.nastran_sdamping_sid)
+        validate_positive_integer_option(opts.nastran_sdamping_sid, 'opts.nastran_sdamping_sid');
+    end
+    if ~(ischar(opts.nastran_title) || (isstring(opts.nastran_title) && isscalar(opts.nastran_title)))
+        error('opts.nastran_title must be a character vector or scalar string.');
+    end
+    opts.nastran_title = char(opts.nastran_title);
+    if ~(isempty(opts.nastran_model_include) || ischar(opts.nastran_model_include) || ...
+            (isstring(opts.nastran_model_include) && isscalar(opts.nastran_model_include)))
+        error('opts.nastran_model_include must be empty, a character vector, or a scalar string.');
+    end
+    if isstring(opts.nastran_model_include)
+        opts.nastran_model_include = char(opts.nastran_model_include);
     end
 end
 
@@ -2125,22 +2196,176 @@ function write_nastran_force_tabled1(freqs_hz, F_hat, valid_mask, load_case_name
     next_tid = table_id_start;
     for load_idx = 1:numel(load_case_names)
         fprintf(fid, '$ Load case: %s\n', load_case_names{load_idx});
-        fprintf(fid, 'TABLED1 %d\n', next_tid);
-        for k = 1:numel(freqs_export)
-            fprintf(fid, '        %.16g %.16g\n', freqs_export(k), real(F_export(k, load_idx)));
-        end
-        fprintf(fid, 'ENDT\n');
-
-        fprintf(fid, 'TABLED1 %d\n', next_tid + 1);
-        for k = 1:numel(freqs_export)
-            fprintf(fid, '        %.16g %.16g\n', freqs_export(k), imag(F_export(k, load_idx)));
-        end
-        fprintf(fid, 'ENDT\n');
+        write_nastran_tabled1_block(fid, next_tid, freqs_export, real(F_export(:, load_idx)));
+        write_nastran_tabled1_block(fid, next_tid + 1, freqs_export, imag(F_export(:, load_idx)));
 
         next_tid = next_tid + 2;
         if load_idx < numel(load_case_names)
             fprintf(fid, '$\n');
         end
+    end
+end
+
+
+function write_nastran_tabled1_block(fid, tid, x_values, y_values)
+    fprintf(fid, 'TABLED1,%d,LINEAR,LINEAR\n', tid);
+    for idx = 1:numel(x_values)
+        fprintf(fid, '+,%s,%s\n', format_nastran_real(x_values(idx)), format_nastran_real(y_values(idx)));
+    end
+    fprintf(fid, '+,ENDT\n');
+end
+
+
+function write_nastran_replay_bdf(path_out, tabled1_path, load_case_names, grid_ids, components, darea_scales, opts)
+    fid = fopen(path_out, 'w');
+    if fid < 0
+        error('Could not open %s for writing.', path_out);
+    end
+    cleanup = onCleanup(@() fclose(fid));
+
+    include_ref = nastran_include_reference(path_out, tabled1_path);
+
+    fprintf(fid, 'SOL 111\n');
+    fprintf(fid, 'CEND\n');
+    fprintf(fid, 'TITLE = %s\n', opts.nastran_title);
+    fprintf(fid, 'SUBCASE %d\n', opts.nastran_subcase_id);
+    fprintf(fid, '  SPC = %d\n', opts.nastran_spc_sid);
+    fprintf(fid, '  METHOD = %d\n', opts.nastran_method_sid);
+    fprintf(fid, '  FREQ = %d\n', opts.nastran_freq_sid);
+    fprintf(fid, '  DLOAD = %d\n', opts.nastran_dload_sid);
+    if ~isempty(opts.nastran_sdamping_sid)
+        fprintf(fid, '  SDAMPING = %d\n', opts.nastran_sdamping_sid);
+    else
+        fprintf(fid, '  $ SDAMPING = <set this if your model uses modal damping>\n');
+    end
+    fprintf(fid, '  DISPLACEMENT(PLOT) = ALL\n');
+    fprintf(fid, '  VELOCITY(PLOT) = ALL\n');
+    fprintf(fid, '  ACCELERATION(PLOT) = ALL\n');
+    fprintf(fid, '\n');
+    fprintf(fid, 'BEGIN BULK\n');
+    fprintf(fid, '$ Reconstructed-force replay deck generated by reconstruct_forces_from_flight_csv.m\n');
+    fprintf(fid, '$ Force units in %s. Replay all listed load cases together to preserve relative phase.\n', ...
+        upper(opts.nastran_force_unit));
+    if ~isempty(opts.nastran_model_include)
+        fprintf(fid, 'INCLUDE ''%s''\n', opts.nastran_model_include);
+    else
+        fprintf(fid, '$ INCLUDE ''your_model.bdf''\n');
+    end
+    fprintf(fid, '\n');
+        fprintf(fid, '$ DAREA: spatial definition of each reconstructed load case\n');
+    for load_idx = 1:numel(load_case_names)
+        fprintf(fid, '$   %s -> GRID %d COMP %d SCALE %s\n', ...
+            load_case_names{load_idx}, grid_ids(load_idx), components(load_idx), ...
+            format_nastran_real(darea_scales(load_idx)));
+        fprintf(fid, 'DAREA,%d,%d,%d,%s\n', ...
+            opts.nastran_darea_sid_start + load_idx - 1, ...
+            grid_ids(load_idx), components(load_idx), format_nastran_real(darea_scales(load_idx)));
+    end
+    fprintf(fid, '\n');
+    fprintf(fid, '$ RLOAD1: real/imaginary TABLED1 reference for each reconstructed load case\n');
+    for load_idx = 1:numel(load_case_names)
+        fprintf(fid, 'RLOAD1,%d,%d,,,%d,%d\n', ...
+            opts.nastran_rload_sid_start + load_idx - 1, ...
+            opts.nastran_darea_sid_start + load_idx - 1, ...
+            opts.nastran_table_id_start + 2 * (load_idx - 1), ...
+            opts.nastran_table_id_start + 2 * (load_idx - 1) + 1);
+    end
+    fprintf(fid, '\n');
+    fprintf(fid, '$ DLOAD: combine all reconstructed loads in one SOL111 replay case\n');
+    fprintf(fid, 'DLOAD,%d,%s', opts.nastran_dload_sid, format_nastran_real(1.0));
+    for load_idx = 1:numel(load_case_names)
+        fprintf(fid, ',%s,%d', format_nastran_real(1.0), opts.nastran_rload_sid_start + load_idx - 1);
+    end
+    fprintf(fid, '\n');
+    fprintf(fid, '\n');
+    fprintf(fid, 'INCLUDE ''%s''\n', include_ref);
+    fprintf(fid, 'ENDDATA\n');
+end
+
+
+function tabled1_path = resolve_nastran_tabled1_output_path(tabled1_path_opt, replay_bdf_path)
+    if ~isempty(tabled1_path_opt)
+        tabled1_path = tabled1_path_opt;
+        return;
+    end
+
+    [folder, stem, ~] = fileparts(replay_bdf_path);
+    tabled1_path = fullfile(folder, [stem '_tables.inc']);
+end
+
+
+function include_ref = nastran_include_reference(deck_path, include_path)
+    [deck_folder, ~, ~] = fileparts(deck_path);
+    [include_folder, include_name, include_ext] = fileparts(include_path);
+    if strcmp(deck_folder, include_folder)
+        include_ref = [include_name include_ext];
+    else
+        include_ref = include_path;
+    end
+end
+
+
+function [grid_ids, components, darea_scales] = resolve_nastran_replay_dofs(opts, result)
+    n_loads = numel(result.load_case_names);
+
+    grid_ids = normalize_nastran_numeric_option(opts.nastran_grid_ids, 'opts.nastran_grid_ids');
+    if isempty(grid_ids)
+        error(['opts.nastran_grid_ids is required when opts.save_nastran_replay_bdf is set. ' ...
+            'Provide a scalar grid ID for the standard 3-load case or one grid ID per load case.']);
+    end
+    if isscalar(grid_ids) && n_loads == 3
+        grid_ids = repmat(grid_ids, 1, n_loads);
+    end
+    if numel(grid_ids) ~= n_loads
+        error('opts.nastran_grid_ids must have exactly %d entries, or one scalar for the standard 3-load case.', n_loads);
+    end
+
+    components = normalize_nastran_numeric_option(opts.nastran_components, 'opts.nastran_components');
+    if isempty(components)
+        if n_loads == 3
+            components = [1 2 3];
+        else
+            error('opts.nastran_components must have exactly %d entries for replay export.', n_loads);
+        end
+    end
+    if numel(components) ~= n_loads
+        error('opts.nastran_components must have exactly %d entries.', n_loads);
+    end
+
+    darea_scales = normalize_nastran_numeric_option(opts.nastran_darea_scales, 'opts.nastran_darea_scales');
+    if isempty(darea_scales)
+        darea_scales = ones(1, n_loads);
+    end
+    if numel(darea_scales) ~= n_loads
+        error('opts.nastran_darea_scales must have exactly %d entries.', n_loads);
+    end
+
+    grid_ids = validate_nastran_integer_vector(grid_ids, 'opts.nastran_grid_ids');
+    components = validate_nastran_integer_vector(components, 'opts.nastran_components');
+    if any(components < 0 | components > 6)
+        error('opts.nastran_components entries must be integers from 0 to 6.');
+    end
+    if any(~isfinite(darea_scales))
+        error('opts.nastran_darea_scales must contain only finite numeric values.');
+    end
+end
+
+
+function values = normalize_nastran_numeric_option(value, arg_name)
+    if isempty(value)
+        values = [];
+        return;
+    end
+    if ~isnumeric(value)
+        error('%s must be numeric.', arg_name);
+    end
+    values = double(value(:)).';
+end
+
+
+function values = validate_nastran_integer_vector(values, arg_name)
+    if any(~isfinite(values)) || any(values ~= round(values)) || any(values < 0)
+        error('%s must contain non-negative integer values.', arg_name);
     end
 end
 
@@ -2215,4 +2440,19 @@ function value = validate_force_unit_option(value, arg_name)
     if ~strcmp(value, 'n') && ~strcmp(value, 'lbf')
         error('%s must be ''N'' or ''lbf''.', arg_name);
     end
+end
+
+
+function validate_positive_integer_option(value, arg_name)
+    if ~isscalar(value) || ~isnumeric(value) || ~isfinite(value) || value < 1 || value ~= round(value)
+        error('%s must be a positive integer.', arg_name);
+    end
+end
+
+
+function text = format_nastran_real(value)
+    if ~isfinite(value)
+        error('NASTRAN export only supports finite real values.');
+    end
+    text = sprintf('%.16E', value);
 end
