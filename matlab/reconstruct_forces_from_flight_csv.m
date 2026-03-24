@@ -41,6 +41,9 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
 %       skip_zero_hz          skip the DC bin, default = true
 %       f_min_hz              optional lower analysis limit
 %       f_max_hz              optional upper analysis limit
+%       active_channel_idx    optional active-channel list or logical mask
+%                             in the original flight/FRF channel order,
+%                             default = all channels
 %       load_case_names       optional names for plots / CSV export, default = file basenames
 %       solve_on_frf_grid     solve only at the FRF frequency lines, default = false
 %       fft_window            'hann' or 'boxcar', default = 'hann'
@@ -67,7 +70,7 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
 %       load-case metadata:
 %       freqs_hz, F_hat, a_meas_fft, a_pred_fft, cond_number,
 %       singular_values, column_mac, max_column_mac, mac_xy, mac_xz,
-%       mac_yz, response_mac, load_case_names,
+%       mac_yz, response_mac, load_case_names, active_channel_idx,
 %       relative_residual, valid_mask, fs_hz, t_start, t_end,
 %       selected measured/predicted accelerations, preprocessing info,
 %       and optional lambda-sweep diagnostics
@@ -135,11 +138,19 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
     if size(H_input, 2) ~= size(acc_g, 2)
         error('H has %d sensors, but the flight input has %d channels.', size(H_input, 2), size(acc_g, 2));
     end
-    if ~isscalar(opts.plot_channel_idx) || ~isnumeric(opts.plot_channel_idx) || ...
-            ~isfinite(opts.plot_channel_idx) || opts.plot_channel_idx < 1 || ...
-            opts.plot_channel_idx > size(acc_g, 2) || opts.plot_channel_idx ~= round(opts.plot_channel_idx)
-        error('opts.plot_channel_idx must be an integer from 1 to %d.', size(acc_g, 2));
+    total_channel_count = size(acc_g, 2);
+    active_channel_idx = resolve_active_channel_indices(opts.active_channel_idx, total_channel_count);
+    active_channel_names = channel_names(active_channel_idx);
+    if numel(active_channel_idx) < total_channel_count
+        log_progress(progress_enabled, 'Using %d/%d active channels for reconstruction.\n', ...
+            numel(active_channel_idx), total_channel_count);
+    else
+        log_progress(progress_enabled, 'Using all %d channels for reconstruction.\n', total_channel_count);
     end
+    H_input = H_input(:, active_channel_idx, :);
+    acc_g = acc_g(:, active_channel_idx);
+    channel_names = active_channel_names;
+    opts.plot_channel_idx = resolve_plot_channel_option(opts.plot_channel_idx, active_channel_idx);
 
     acc_g_raw = acc_g;
     stage_timer = tic;
@@ -343,6 +354,9 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
     result.acc_meas_sel_si = acc_sel_si;
     result.acc_pred_sel_g = acc_pred_sel_g;
     result.acc_pred_sel_si = acc_pred_sel_si;
+    result.channel_names = channel_names;
+    result.active_channel_idx = active_channel_idx(:);
+    result.n_channels_total = total_channel_count;
     result.load_case_names = load_case_names;
     result.preprocessing = preprocessing;
     result.lambda_sweep = lambda_sweep;
@@ -367,6 +381,8 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
     inputs.time_s = time_s;
     inputs.acc_g = acc_g;
     inputs.channel_names = channel_names;
+    inputs.active_channel_idx = active_channel_idx(:);
+    inputs.n_channels_total = total_channel_count;
     inputs.options = opts;
     inputs.preprocessing = preprocessing;
     inputs.timing = timing;
@@ -413,6 +429,7 @@ function opts = resolve_options(opts, time_s)
     defaults.skip_zero_hz = true;
     defaults.f_min_hz = [];
     defaults.f_max_hz = [];
+    defaults.active_channel_idx = [];
     defaults.load_case_names = {};
     defaults.solve_on_frf_grid = false;
     defaults.fft_window = 'hann';
@@ -496,6 +513,55 @@ function opts = resolve_options(opts, time_s)
             ~isfinite(opts.progress_interval_sec) || opts.progress_interval_sec <= 0
         error('opts.progress_interval_sec must be a positive finite scalar.');
     end
+end
+
+
+function active_idx = resolve_active_channel_indices(value, n_channels)
+    if isempty(value)
+        active_idx = 1:n_channels;
+        return;
+    end
+
+    if islogical(value)
+        mask = value(:);
+        if numel(mask) ~= n_channels
+            error('opts.active_channel_idx logical mask must have length %d.', n_channels);
+        end
+        active_idx = find(mask).';
+    else
+        if ~isnumeric(value)
+            error('opts.active_channel_idx must be empty, a logical mask, or a numeric index vector.');
+        end
+        active_idx = double(value(:).');
+        if isempty(active_idx) || any(~isfinite(active_idx)) || any(active_idx < 1) || ...
+                any(active_idx > n_channels) || any(active_idx ~= round(active_idx))
+            error('opts.active_channel_idx must contain integer channel indices from 1 to %d.', n_channels);
+        end
+        active_idx = unique(active_idx, 'stable');
+    end
+
+    if isempty(active_idx)
+        error('opts.active_channel_idx must select at least one channel.');
+    end
+end
+
+
+function plot_channel_idx = resolve_plot_channel_option(value, active_channel_idx)
+    n_active = numel(active_channel_idx);
+    if ~isscalar(value) || ~isnumeric(value) || ~isfinite(value) || value < 1 || value ~= round(value)
+        error('opts.plot_channel_idx must be a positive integer.');
+    end
+
+    if value > n_active
+        mapped = find(active_channel_idx == value, 1, 'first');
+        if isempty(mapped)
+            error('opts.plot_channel_idx must reference an active channel position from 1 to %d, or an original active channel index.', n_active);
+        end
+        plot_channel_idx = mapped;
+        return;
+    end
+
+    plot_channel_idx = value;
 end
 
 
@@ -1296,6 +1362,10 @@ function print_summary(result)
     fprintf('-------------------------------------\n');
     if isfield(result, 'solve_grid_source')
         fprintf('Solve frequency grid         : %s\n', strrep(result.solve_grid_source, '_', ' '));
+    end
+    if isfield(result, 'active_channel_idx') && isfield(result, 'n_channels_total')
+        fprintf('Active channels             : %d / %d\n', ...
+            numel(result.active_channel_idx), result.n_channels_total);
     end
     if isfield(result, 'load_case_names')
         fprintf('Load cases                  : %d\n', numel(result.load_case_names));

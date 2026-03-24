@@ -107,7 +107,8 @@ the measured PSD can be bracketed with `+/- 3 dB` guide lines, and the PSD axes/
 can be controlled with `plot_psd_xscale`, `plot_psd_yscale`, `plot_psd_fmin_hz`,
 and `plot_psd_fmax_hz`. If your SOL111 FRFs are exported on coarse lines such as
 `1 Hz`, set `solve_on_frf_grid=true` to solve only on those FRF lines instead of
-every flight FFT bin.
+every flight FFT bin. You can also iterate on the inverse problem by setting
+`active_channel_idx` to solve with only a selected subset of response channels.
 
 Example:
 
@@ -120,6 +121,7 @@ opts = struct( ...
     'highpass_hz', 2.0, ...
     'highpass_order', 4, ...
     'solve_on_frf_grid', true, ...
+    'active_channel_idx', [1 2 3], ...
     'plot_channel_idx', 1, ...
     'plot_all_channels', true, ...
     'plot_psd_error_map', true, ...
@@ -319,6 +321,9 @@ Practical guidance:
   - skips the DC bin, which is usually the right choice for this type of frequency-domain inversion
 - `f_min_hz`, `f_max_hz`:
   - optional frequency limits applied after the FFT grid is formed
+- `active_channel_idx`:
+  - optional MATLAB-only list of active response channels, or a logical mask, used to subset both the flight data and FRF sensor columns before inversion
+  - useful for leave-one-out tests or for dropping suspect channels to see how the reconstruction changes
 - `load_case_names`:
   - optional labels for the mobility files / reconstructed loads in MATLAB plots and CSV exports
 - `solve_on_frf_grid`:
@@ -330,6 +335,7 @@ Practical guidance:
   - a 4-pole filter at `2 Hz` is a reasonable starting point when low-frequency vehicle motion is contaminating the data
 - `plot_channel_idx`:
   - selected channel for the single measured-vs-predicted comparison figure in MATLAB
+  - when `active_channel_idx` is used, this refers to the active-channel subset
 - `plot_all_channels`:
   - overlays all measured and predicted channels in MATLAB
 - `plot_lambda_sweep`:

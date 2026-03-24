@@ -66,6 +66,8 @@ opts.fft_window = 'hann';
 opts.tikhonov_lambda = 0.0;
 % Set true to solve only on the FRF frequency lines (for example, 1 Hz SOL111 data).
 opts.solve_on_frf_grid = false;
+% Optional channel subset for leave-one-out / sensor-screening studies.
+% opts.active_channel_idx = [1 2 3 4 6 7 8];
 opts.plot_results = true;
 opts.plot_channel_idx = 1;
 opts.plot_all_channels = true;
