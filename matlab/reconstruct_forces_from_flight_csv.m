@@ -55,6 +55,8 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
 %       plot_psd_yscale       'log' or 'linear', default = 'log'
 %       plot_psd_fmin_hz      PSD plot lower x limit [Hz], default = 10
 %       plot_psd_fmax_hz      PSD plot upper x limit [Hz], default = 3000
+%       psd_nperseg           optional Welch segment length for PSD plots
+%       psd_noverlap          optional Welch overlap for PSD plots
 %       plot_lambda_sweep     plot lambda sweep summary, default = false
 %       lambda_sweep_values   lambda values for the sweep, default = [0 1e-9 1e-8 1e-7 1e-6 1e-5]
 %       lambda_sweep_max_bins maximum bins used in the lambda sweep summary, default = 2000
@@ -441,6 +443,8 @@ function opts = resolve_options(opts, time_s)
     defaults.plot_psd_yscale = 'log';
     defaults.plot_psd_fmin_hz = 10.0;
     defaults.plot_psd_fmax_hz = 3000.0;
+    defaults.psd_nperseg = [];
+    defaults.psd_noverlap = [];
     defaults.plot_lambda_sweep = false;
     defaults.lambda_sweep_values = [0, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5];
     defaults.lambda_sweep_max_bins = 2000;
@@ -508,6 +512,23 @@ function opts = resolve_options(opts, time_s)
     end
     if strcmp(opts.plot_psd_xscale, 'log') && opts.plot_psd_fmin_hz <= 0
         error('opts.plot_psd_fmin_hz must be > 0 when opts.plot_psd_xscale is "log".');
+    end
+    if ~isempty(opts.psd_nperseg)
+        if ~isscalar(opts.psd_nperseg) || ~isnumeric(opts.psd_nperseg) || ...
+                ~isfinite(opts.psd_nperseg) || opts.psd_nperseg < 1 || ...
+                opts.psd_nperseg ~= round(opts.psd_nperseg)
+            error('opts.psd_nperseg must be empty or a positive integer.');
+        end
+    end
+    if ~isempty(opts.psd_noverlap)
+        if ~isscalar(opts.psd_noverlap) || ~isnumeric(opts.psd_noverlap) || ...
+                ~isfinite(opts.psd_noverlap) || opts.psd_noverlap < 0 || ...
+                opts.psd_noverlap ~= round(opts.psd_noverlap)
+            error('opts.psd_noverlap must be empty or a non-negative integer.');
+        end
+        if ~isempty(opts.psd_nperseg) && opts.psd_noverlap >= opts.psd_nperseg
+            error('opts.psd_noverlap must be less than opts.psd_nperseg.');
+        end
     end
     if ~isscalar(opts.progress_interval_sec) || ~isnumeric(opts.progress_interval_sec) || ...
             ~isfinite(opts.progress_interval_sec) || opts.progress_interval_sec <= 0
@@ -1556,9 +1577,9 @@ function plot_single_channel_comparison(result, inputs)
     [time_plot, acc_meas_plot_g] = downsample_series_for_plot(result.time_sel_s, acc_meas_g, 5000);
     [~, acc_pred_plot_g] = downsample_series_for_plot(result.time_sel_s, acc_pred_g, 5000);
 
-    nperseg = default_psd_nperseg(numel(result.time_sel_s));
-    [freq_meas_psd, psd_meas] = welch_psd_1d(acc_meas_g, result.fs_hz, nperseg, [], inputs.options.fft_window);
-    [freq_pred_psd, psd_pred] = welch_psd_1d(acc_pred_g, result.fs_hz, nperseg, [], inputs.options.fft_window);
+    [nperseg, noverlap] = resolve_psd_welch_options(numel(result.time_sel_s), inputs.options);
+    [freq_meas_psd, psd_meas] = welch_psd_1d(acc_meas_g, result.fs_hz, nperseg, noverlap, inputs.options.fft_window);
+    [freq_pred_psd, psd_pred] = welch_psd_1d(acc_pred_g, result.fs_hz, nperseg, noverlap, inputs.options.fft_window);
     psd_meas_plus_3db = psd_meas * db_power_ratio(3.0);
     psd_meas_minus_3db = psd_meas / db_power_ratio(3.0);
     [freq_plot, psd_meas_plot] = prepare_psd_curve_for_plot(freq_meas_psd, psd_meas, inputs.options);
@@ -1643,14 +1664,14 @@ end
 
 function [freq_psd, meas_psd_g, pred_psd_g, db_diff] = compute_all_channel_psd_difference(result, inputs)
     n_channels = size(result.acc_meas_sel_g, 2);
-    nperseg = default_psd_nperseg(numel(result.time_sel_s));
+    [nperseg, noverlap] = resolve_psd_welch_options(numel(result.time_sel_s), inputs.options);
     freq_psd = [];
     meas_psd_g = [];
     pred_psd_g = [];
 
     for channel_idx = 1:n_channels
-        [freq_this, psd_meas] = welch_psd_1d(result.acc_meas_sel_g(:, channel_idx), result.fs_hz, nperseg, [], inputs.options.fft_window);
-        [freq_pred, psd_pred] = welch_psd_1d(result.acc_pred_sel_g(:, channel_idx), result.fs_hz, nperseg, [], inputs.options.fft_window);
+        [freq_this, psd_meas] = welch_psd_1d(result.acc_meas_sel_g(:, channel_idx), result.fs_hz, nperseg, noverlap, inputs.options.fft_window);
+        [freq_pred, psd_pred] = welch_psd_1d(result.acc_pred_sel_g(:, channel_idx), result.fs_hz, nperseg, noverlap, inputs.options.fft_window);
 
         if isempty(freq_psd)
             freq_psd = freq_this;
@@ -1812,6 +1833,23 @@ end
 
 function nperseg = default_psd_nperseg(n_time)
     nperseg = min(256, max(32, floor(n_time / 4)));
+end
+
+
+function [nperseg, noverlap] = resolve_psd_welch_options(n_time, opts)
+    if isempty(opts.psd_nperseg)
+        nperseg = default_psd_nperseg(n_time);
+    else
+        nperseg = min(round(opts.psd_nperseg), n_time);
+    end
+    nperseg = max(1, nperseg);
+
+    if isempty(opts.psd_noverlap)
+        noverlap = floor(nperseg / 2);
+    else
+        noverlap = min(round(opts.psd_noverlap), nperseg - 1);
+    end
+    noverlap = max(0, noverlap);
 end
 
 

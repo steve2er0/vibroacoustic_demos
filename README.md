@@ -109,6 +109,8 @@ and `plot_psd_fmax_hz`. If your SOL111 FRFs are exported on coarse lines such as
 `1 Hz`, set `solve_on_frf_grid=true` to solve only on those FRF lines instead of
 every flight FFT bin. You can also iterate on the inverse problem by setting
 `active_channel_idx` to solve with only a selected subset of response channels.
+If your PSD plots start too high in frequency, increase `psd_nperseg`; the first
+nonzero Welch bin is approximately `fs / psd_nperseg`.
 
 Example:
 
@@ -129,6 +131,7 @@ opts = struct( ...
     'plot_psd_yscale', 'log', ...
     'plot_psd_fmin_hz', 10.0, ...
     'plot_psd_fmax_hz', 3000.0, ...
+    'psd_nperseg', 2048, ...
     'plot_lambda_sweep', true, ...
     'show_progress', true, ...
     'progress_interval_sec', 2.0, ...
@@ -324,6 +327,9 @@ Practical guidance:
 - `active_channel_idx`:
   - optional MATLAB-only list of active response channels, or a logical mask, used to subset both the flight data and FRF sensor columns before inversion
   - useful for leave-one-out tests or for dropping suspect channels to see how the reconstruction changes
+- `psd_nperseg`, `psd_noverlap`:
+  - optional MATLAB-only Welch PSD controls for the measured/predicted comparison plots
+  - the first nonzero PSD bin is approximately `fs / psd_nperseg`, so higher `psd_nperseg` gives lower-frequency resolution
 - `load_case_names`:
   - optional labels for the mobility files / reconstructed loads in MATLAB plots and CSV exports
 - `solve_on_frf_grid`:

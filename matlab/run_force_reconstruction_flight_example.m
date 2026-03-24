@@ -76,6 +76,9 @@ opts.plot_psd_xscale = 'log';
 opts.plot_psd_yscale = 'log';
 opts.plot_psd_fmin_hz = 10.0;
 opts.plot_psd_fmax_hz = 3000.0;
+% Increase psd_nperseg if the first nonzero PSD bin is too high in frequency.
+% For example, fs / psd_nperseg ~= 10 Hz gives a first visible bin near 10 Hz.
+opts.psd_nperseg = 2048;
 opts.plot_lambda_sweep = true;
 opts.verbose = true;
 opts.show_progress = true;
