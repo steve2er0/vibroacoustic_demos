@@ -32,6 +32,7 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 %       skip_zero_hz          skip the DC bin, default = true
 %       f_min_hz              optional lower analysis limit
 %       f_max_hz              optional upper analysis limit
+%       solve_on_frf_grid     solve only at the FRF frequency lines, default = false
 %       fft_window            'hann' or 'boxcar', default = 'hann'
 %       plot_results          plot reconstructed forces + diagnostics, default = false
 %       plot_channel_idx      1-based channel index for acceleration comparison plots, default = 1
@@ -160,22 +161,29 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     log_progress(progress_enabled, 'Computing windowed FFT for %d channels...\n', size(acc_sel_g, 2));
     fs_hz = infer_fs(time_sel);
     acc_sel_si = acc_sel_g * opts.g0;
-    [freqs_hz, a_meas_fft] = complex_rfft_matrix(acc_sel_si, fs_hz, opts.fft_window);
+    [flight_fft_freqs_hz, a_meas_fft_flight] = complex_rfft_matrix(acc_sel_si, fs_hz, opts.fft_window);
     timing.fft_sec = toc(stage_timer);
     log_progress(progress_enabled, 'Computed FFT: %d frequency bins at %.3f Hz sample rate in %s.\n', ...
-        numel(freqs_hz), fs_hz, format_duration(timing.fft_sec));
+        numel(flight_fft_freqs_hz), fs_hz, format_duration(timing.fft_sec));
 
     stage_timer = tic;
-    log_progress(progress_enabled, 'Converting mobility to accelerance and interpolating onto FFT grid...\n');
+    log_progress(progress_enabled, 'Converting mobility to accelerance and preparing the solve grid...\n');
     H_si = H_input;
     if ~opts.mobility_is_si
         H_si = mobility_imp_to_si(H_input);
     end
 
     A_frf = accelerance_from_mobility(H_si, 2.0 * pi * frf_freqs_hz);
-    A_fft = interp_complex_frequency(freqs_hz, frf_freqs_hz, A_frf, complex(NaN, NaN));
+    [freqs_hz, a_meas_fft, A_fft, solve_grid_source] = prepare_reconstruction_grid( ...
+        flight_fft_freqs_hz, a_meas_fft_flight, frf_freqs_hz, A_frf, opts);
     timing.interp_sec = toc(stage_timer);
-    log_progress(progress_enabled, 'Prepared FRFs on FFT grid in %s.\n', format_duration(timing.interp_sec));
+    if strcmp(solve_grid_source, 'frf')
+        log_progress(progress_enabled, 'Prepared FRFs on the FRF grid: %d solve bins in %s.\n', ...
+            numel(freqs_hz), format_duration(timing.interp_sec));
+    else
+        log_progress(progress_enabled, 'Prepared FRFs on the flight FFT grid: %d solve bins in %s.\n', ...
+            numel(freqs_hz), format_duration(timing.interp_sec));
+    end
 
     n_freq = numel(freqs_hz);
     n_sensors = size(a_meas_fft, 2);
@@ -201,7 +209,7 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     if ~isempty(opts.f_max_hz)
         solve_mask = solve_mask & freqs_hz <= opts.f_max_hz;
     end
-    finite_mask = all(isfinite(reshape(A_fft, n_freq, [])), 2);
+    finite_mask = all(isfinite(reshape(A_fft, n_freq, [])), 2) & all(isfinite(a_meas_fft), 2);
     solve_indices = find(solve_mask & finite_mask);
     n_solve = numel(solve_indices);
 
@@ -265,7 +273,13 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
         log_progress(progress_enabled, 'Completed frequency solve in %s.\n', format_duration(timing.solve_sec));
     end
 
-    acc_pred_sel_si = real(irfft_matrix(a_pred_fft, numel(time_sel)));
+    if strcmp(solve_grid_source, 'frf')
+        a_pred_fft_timegrid = interp_complex_frequency(flight_fft_freqs_hz, freqs_hz, a_pred_fft, complex(0.0, 0.0));
+    else
+        a_pred_fft_timegrid = a_pred_fft;
+    end
+
+    acc_pred_sel_si = real(irfft_matrix(a_pred_fft_timegrid, numel(time_sel)));
     acc_pred_sel_g = acc_pred_sel_si / opts.g0;
 
     lambda_sweep = struct();
@@ -287,6 +301,10 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     result.F_hat = F_hat;
     result.a_meas_fft = a_meas_fft;
     result.a_pred_fft = a_pred_fft;
+    result.flight_fft_freqs_hz = flight_fft_freqs_hz;
+    result.a_meas_fft_flight = a_meas_fft_flight;
+    result.a_pred_fft_flight = a_pred_fft_timegrid;
+    result.solve_grid_source = solve_grid_source;
     result.cond_number = cond_number;
     result.singular_values = singular_values;
     result.mac_xy = mac_xy;
@@ -316,6 +334,7 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     inputs.flight_input = flightInput;
     inputs.flight_input_type = flight_input_type;
     inputs.frf_freqs_hz = frf_freqs_hz;
+    inputs.solve_grid_source = solve_grid_source;
     inputs.H_input = H_input;
     inputs.acc_g_raw = acc_g_raw;
     inputs.time_s = time_s;
@@ -366,6 +385,7 @@ function opts = resolve_options(opts, time_s)
     defaults.skip_zero_hz = true;
     defaults.f_min_hz = [];
     defaults.f_max_hz = [];
+    defaults.solve_on_frf_grid = false;
     defaults.fft_window = 'hann';
     defaults.plot_results = false;
     defaults.plot_channel_idx = 1;
@@ -400,6 +420,7 @@ function opts = resolve_options(opts, time_s)
     opts.plot_all_channels = logical(opts.plot_all_channels);
     opts.plot_psd_error_map = logical(opts.plot_psd_error_map);
     opts.plot_lambda_sweep = logical(opts.plot_lambda_sweep);
+    opts.solve_on_frf_grid = logical(opts.solve_on_frf_grid);
     opts.plot_psd_xscale = validate_axis_scale_option(opts.plot_psd_xscale, 'opts.plot_psd_xscale');
     opts.plot_psd_yscale = validate_axis_scale_option(opts.plot_psd_yscale, 'opts.plot_psd_yscale');
 
@@ -512,6 +533,32 @@ function filtered = zero_phase_fft_highpass(x, fs_hz, cutoff_hz, order)
         X = fft(double(x(:, channel_idx)));
         filtered(:, channel_idx) = real(ifft(X .* transfer_full));
     end
+end
+
+
+function [solve_freqs_hz, a_meas_solve_fft, A_solve, solve_grid_source] = prepare_reconstruction_grid( ...
+        flight_fft_freqs_hz, a_meas_fft_flight, frf_freqs_hz, A_frf, opts)
+    if opts.solve_on_frf_grid
+        fft_max_hz = flight_fft_freqs_hz(end);
+        tol_hz = max(1e-12, 1e-9 * max(abs([fft_max_hz; frf_freqs_hz(:); 1.0])));
+        in_range_mask = frf_freqs_hz >= (flight_fft_freqs_hz(1) - tol_hz) & ...
+            frf_freqs_hz <= (fft_max_hz + tol_hz);
+        solve_freqs_hz = frf_freqs_hz(in_range_mask);
+        if isempty(solve_freqs_hz)
+            error('No FRF frequency lines overlap the flight FFT range.');
+        end
+
+        A_solve = A_frf(in_range_mask, :, :);
+        a_meas_solve_fft = interp_complex_frequency(solve_freqs_hz, flight_fft_freqs_hz, ...
+            a_meas_fft_flight, complex(NaN, NaN));
+        solve_grid_source = 'frf';
+        return;
+    end
+
+    solve_freqs_hz = flight_fft_freqs_hz;
+    a_meas_solve_fft = a_meas_fft_flight;
+    A_solve = interp_complex_frequency(solve_freqs_hz, frf_freqs_hz, A_frf, complex(NaN, NaN));
+    solve_grid_source = 'flight_fft';
 end
 
 
@@ -1034,6 +1081,9 @@ function print_summary(result)
     fprintf('\n');
     fprintf('Force reconstruction from flight input\n');
     fprintf('-------------------------------------\n');
+    if isfield(result, 'solve_grid_source')
+        fprintf('Solve frequency grid         : %s\n', strrep(result.solve_grid_source, '_', ' '));
+    end
     if isfield(result, 'preprocessing') && result.preprocessing.highpass_enabled
         fprintf('High-pass filter            : %d-pole %.3f Hz (%s)\n', ...
             result.preprocessing.highpass_order, result.preprocessing.highpass_hz, result.preprocessing.method);

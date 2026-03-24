@@ -105,7 +105,9 @@ and the MATLAB all-channel view can also show per-channel PSD subplots plus a
 channel-by-frequency dB error map. The PSD legends include measured/predicted RMS,
 the measured PSD can be bracketed with `+/- 3 dB` guide lines, and the PSD axes/range
 can be controlled with `plot_psd_xscale`, `plot_psd_yscale`, `plot_psd_fmin_hz`,
-and `plot_psd_fmax_hz`.
+and `plot_psd_fmax_hz`. If your SOL111 FRFs are exported on coarse lines such as
+`1 Hz`, set `solve_on_frf_grid=true` to solve only on those FRF lines instead of
+every flight FFT bin.
 
 Example:
 
@@ -117,6 +119,7 @@ opts = struct( ...
     'tikhonov_lambda', 0.0, ...
     'highpass_hz', 2.0, ...
     'highpass_order', 4, ...
+    'solve_on_frf_grid', true, ...
     'plot_channel_idx', 1, ...
     'plot_all_channels', true, ...
     'plot_psd_error_map', true, ...
@@ -298,6 +301,9 @@ Practical guidance:
   - skips the DC bin, which is usually the right choice for this type of frequency-domain inversion
 - `f_min_hz`, `f_max_hz`:
   - optional frequency limits applied after the FFT grid is formed
+- `solve_on_frf_grid`:
+  - when `false`, the solve runs on the native flight FFT grid and the FRFs are interpolated onto it
+  - when `true`, the solve runs only on the FRF frequency lines, which is useful when the model is exported on coarse spacing such as `1 Hz` from SOL111
 - `highpass_hz`, `highpass_order`:
   - optional zero-phase high-pass preprocessing
   - useful for removing bias, gravity leakage, drift, or low-frequency vehicle rigid-body motion

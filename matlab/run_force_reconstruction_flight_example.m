@@ -50,6 +50,8 @@ opts.t_start = 0.5;
 opts.t_end = 3.5;
 opts.fft_window = 'hann';
 opts.tikhonov_lambda = 0.0;
+% Set true to solve only on the FRF frequency lines (for example, 1 Hz SOL111 data).
+opts.solve_on_frf_grid = false;
 opts.plot_results = true;
 opts.plot_channel_idx = 1;
 opts.plot_all_channels = true;
