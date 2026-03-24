@@ -154,6 +154,172 @@ If you want the repo sample CSVs for MATLAB, generate them first with:
 python3 examples/generate_synthetic_data.py
 ```
 
+### Workflow and terminology
+
+This section summarizes the main concepts and options used by the Python and MATLAB workflows.
+
+#### End-to-end workflow
+
+1. Load three mobility files, one each for unit `Fx`, `Fy`, and `Fz`.
+2. Load flight acceleration data from either:
+   - one CSV with `time_s,ch0,ch1,...`
+   - or ordered per-channel MAT files with `amp`, `t`, and `sr`
+3. Optionally apply a zero-phase high-pass filter to remove mean, drift, or low-frequency vehicle motion.
+4. Select the analysis time window with `t_start` and `t_end`.
+5. Convert the mobility FRFs to accelerance with:
+   \[
+   A(\omega) = j \omega H(\omega)
+   \]
+6. Compute the windowed one-sided FFT of the measured flight accelerations.
+7. Interpolate the FRFs onto the FFT frequency grid.
+8. Solve the force reconstruction independently at each frequency bin.
+9. Reconstruct the model-predicted acceleration from the solved forces.
+10. Review diagnostics such as residual, response MAC, singular values, and condition number.
+
+#### Input formats and units
+
+- Mobility CSV format:
+  - `freq_hz,re0,im0,re1,im1,...`
+  - one file for `Fx`, one for `Fy`, one for `Fz`
+  - real/imaginary pairs correspond to response channels in the same order as the flight channels
+- Flight CSV format:
+  - `time_s,ch0,ch1,ch2,...`
+  - acceleration channels are expected in `g`
+- Flight MAT format:
+  - one file per channel
+  - each file contains one structure with fields:
+    - `amp`: acceleration in `g`
+    - `t`: time vector in seconds
+    - `sr`: sample rate in Hz
+  - mixed sample rates are allowed; the loaders align all channels over the common overlap and resample to the slowest channel rate
+
+If your NASTRAN model is in `lbf` and `in`, the expected mobility units are:
+
+- mobility: `(in/s)/lbf`
+- displacement FRF: `in/lbf`
+- accelerance: `(in/s^2)/lbf`
+
+This toolkit normally expects mobility as input. If you already have SI mobility, set `mobility_is_si=true` in MATLAB or the equivalent GUI option on the Python side.
+
+For workflow testing without measured FRFs, the Python GUIs and CLI also support a dummy `H = ones()` mode.
+
+#### What the inversion is solving
+
+At each frequency bin, the code solves:
+
+\[
+a_k \approx A_k F_k
+\]
+
+where:
+
+- `A_k` is the complex accelerance matrix at one frequency, shaped `n_sensors x 3`
+- `a_k` is the measured complex acceleration vector across sensors
+- `F_k` is the unknown complex force vector `[Fx, Fy, Fz]^T`
+
+Because the system is typically overdetermined, the code uses a complex least-squares solve. The key step is the Hermitian transpose:
+
+\[
+A^H = \overline{A}^T
+\]
+
+not a plain transpose. This matters because the FRFs and FFT data are complex-valued, so the correct least-squares normal equations are:
+
+\[
+(A^H A) F = A^H a
+\]
+
+The MATLAB implementation uses `A'`, which is the Hermitian transpose for complex data, and the Python implementation uses `A.conj().T`.
+
+#### What `lambda` means
+
+`lambda` or `tikhonov_lambda` is the regularization parameter in the damped least-squares solve:
+
+\[
+(A^H A + \lambda^2 I) F = A^H a
+\]
+
+Interpretation:
+
+- `lambda = 0`: plain least squares
+- small `lambda`: closer fit to the measured data, but more sensitive to noisy or ill-conditioned bins
+- larger `lambda`: more stable and smoother force estimates, but more biased and less able to exactly match the measured response
+
+Practical guidance:
+
+- start with `0`, `1e-9`, `1e-8`, `1e-7`, `1e-6`, `1e-5`
+- choose the smallest value that removes unstable force spikes without materially hurting the measured-vs-predicted response match
+- the MATLAB lambda sweep plot is a quick way to compare median response MAC, residual, and force magnitude across candidate values
+
+#### Meaning of the diagnostics
+
+- `relative_residual`:
+  - \[
+    \|a_{pred} - a_{meas}\| / \|a_{meas}\|
+    \]
+  - lower is better
+  - measures how closely the reconstructed model response matches the measured acceleration at each frequency
+- `response_mac`:
+  - scalar MAC between the full measured and predicted sensor vectors at one frequency
+  - ranges from `0` to `1`
+  - values near `1` mean the predicted multi-sensor response shape matches the measured shape well
+- `cond_number`:
+  - the matrix condition number of `A`
+  - larger values mean the inversion is more sensitive to small errors or noise
+  - very large values often indicate that the solved forces may be unstable unless regularized
+- `singular_values`:
+  - singular values of `A`
+  - show how much independent force-direction information is available at that frequency
+  - a very small third singular value usually indicates weak observability in one direction
+- `mac_xy`, `mac_xz`, `mac_yz`:
+  - column-to-column MAC values for the three columns of `A`
+  - these indicate how linearly similar the force-direction response columns are
+  - values near `1` mean two load directions produce very similar sensor response patterns, which makes force separation harder
+
+#### Meaning of the main options
+
+- `t_start`, `t_end`:
+  - time window used for the FFT and reconstruction
+- `fft_window`:
+  - window applied before the FFT, typically `hann` or `boxcar`
+- `mobility_is_si`:
+  - set `true` only if the input FRFs are already in `(m/s)/N`
+- `skip_zero_hz`:
+  - skips the DC bin, which is usually the right choice for this type of frequency-domain inversion
+- `f_min_hz`, `f_max_hz`:
+  - optional frequency limits applied after the FFT grid is formed
+- `highpass_hz`, `highpass_order`:
+  - optional zero-phase high-pass preprocessing
+  - useful for removing bias, gravity leakage, drift, or low-frequency vehicle rigid-body motion
+  - a 4-pole filter at `2 Hz` is a reasonable starting point when low-frequency vehicle motion is contaminating the data
+- `plot_channel_idx`:
+  - selected channel for the single measured-vs-predicted comparison figure in MATLAB
+- `plot_all_channels`:
+  - overlays all measured and predicted channels in MATLAB
+- `plot_lambda_sweep`:
+  - enables the MATLAB lambda sweep summary figure
+- `lambda_sweep_values`:
+  - lambda values evaluated in the MATLAB sweep
+- `lambda_sweep_max_bins`:
+  - limits how many frequency bins are used in the sweep summary so large datasets stay responsive
+- `show_progress`, `progress_interval_sec`:
+  - console progress/timing output for MATLAB, including solve-loop ETA updates
+
+#### Measured versus predicted acceleration
+
+Both the Python app and MATLAB workflow compute the model-predicted response after the force solve:
+
+\[
+a_{pred} = A F
+\]
+
+That predicted acceleration is compared against the measured acceleration in two ways:
+
+- time-domain overlay after inverse FFT of the predicted one-sided spectrum
+- PSD overlay for the selected channel and, in MATLAB, optionally for all channels
+
+This is the main sanity check that the reconstructed forces are physically consistent with the measured response.
+
 ### Tests
 
 ```bash
@@ -161,7 +327,7 @@ python3 examples/generate_synthetic_csv.py   # creates examples/synthetic_data/ 
 python3 -m pytest tests/ -q
 ```
 
-(All tests should pass; **12 passed** including the simply-supported plate reconstruction case, Python MAT-flight import coverage, and the dummy-`H=ones()` helper.)
+(All tests should pass; **13 passed** including the simply-supported plate reconstruction case, Python MAT-flight import coverage, and the dummy-`H=ones()` helper.)
 
 ### Library usage
 
