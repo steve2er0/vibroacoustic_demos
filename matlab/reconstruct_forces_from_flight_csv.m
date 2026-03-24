@@ -2210,9 +2210,14 @@ end
 function write_nastran_tabled1_block(fid, tid, x_values, y_values)
     fprintf(fid, 'TABLED1,%d,LINEAR,LINEAR\n', tid);
     for idx = 1:numel(x_values)
-        fprintf(fid, '+,%s,%s\n', format_nastran_real(x_values(idx)), format_nastran_real(y_values(idx)));
+        if idx == numel(x_values)
+            fprintf(fid, '+,%s,%s,ENDT\n', ...
+                format_nastran_real(x_values(idx)), format_nastran_real(y_values(idx)));
+        else
+            fprintf(fid, '+,%s,%s\n', ...
+                format_nastran_real(x_values(idx)), format_nastran_real(y_values(idx)));
+        end
     end
-    fprintf(fid, '+,ENDT\n');
 end
 
 

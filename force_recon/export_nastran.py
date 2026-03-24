@@ -122,10 +122,15 @@ def tabrnd1_snippet(
     psd: one-sided force PSD (N^2/Hz or lbf^2/Hz) same length as freqs.
     """
     lines = [f"TABRND1,{tid},{xaxis},{yaxis}"]
+    valid_rows: list[str] = []
     for f, g in zip(freqs_hz, psd):
         if np.isfinite(f) and np.isfinite(g) and g >= 0:
-            lines.append(f"+,{_fmt_real(float(f))},{_fmt_real(float(g))}")
-    lines.append("+,ENDT")
+            valid_rows.append(f"+,{_fmt_real(float(f))},{_fmt_real(float(g))}")
+    if valid_rows:
+        valid_rows[-1] += ",ENDT"
+        lines.extend(valid_rows)
+    else:
+        lines.append("+,SKIP,SKIP,ENDT")
     return "\n".join(lines)
 
 
@@ -141,15 +146,25 @@ def tabled1_re_im_snippets(
     F = np.asarray(F_complex, dtype=np.complex128).ravel() * scale
     f = np.asarray(freqs_hz, dtype=np.float64).ravel()
     lines = [f"TABLED1,{tid_re},LINEAR,LINEAR"]
+    real_rows: list[str] = []
     for fi, z in zip(f, F.real):
         if np.isfinite(fi) and np.isfinite(z):
-            lines.append(f"+,{_fmt_real(float(fi))},{_fmt_real(float(z))}")
-    lines.append("+,ENDT")
+            real_rows.append(f"+,{_fmt_real(float(fi))},{_fmt_real(float(z))}")
+    if real_rows:
+        real_rows[-1] += ",ENDT"
+        lines.extend(real_rows)
+    else:
+        lines.append("+,SKIP,SKIP,ENDT")
     lines.append(f"TABLED1,{tid_im},LINEAR,LINEAR")
+    imag_rows: list[str] = []
     for fi, z in zip(f, F.imag):
         if np.isfinite(fi) and np.isfinite(z):
-            lines.append(f"+,{_fmt_real(float(fi))},{_fmt_real(float(z))}")
-    lines.append("+,ENDT")
+            imag_rows.append(f"+,{_fmt_real(float(fi))},{_fmt_real(float(z))}")
+    if imag_rows:
+        imag_rows[-1] += ",ENDT"
+        lines.extend(imag_rows)
+    else:
+        lines.append("+,SKIP,SKIP,ENDT")
     return "\n".join(lines)
 
 
