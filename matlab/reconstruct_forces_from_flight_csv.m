@@ -1,13 +1,22 @@
-function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, pathFz, flightInput, opts)
-%RECONSTRUCT_FORCES_FROM_FLIGHT_CSV Reconstruct 3-axis interface forces from flight input data.
+function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
+%RECONSTRUCT_FORCES_FROM_FLIGHT_CSV Reconstruct interface forces from flight input data.
 %
+%   Legacy form:
 %   [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, pathFz, flightInput)
 %   [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, pathFz, flightInput, opts)
 %
+%   General form:
+%   [result, inputs] = reconstruct_forces_from_flight_csv(mobilityPaths, flightInput)
+%   [result, inputs] = reconstruct_forces_from_flight_csv(mobilityPaths, flightInput, opts)
+%
 % Inputs
 %   pathFx, pathFy, pathFz
-%       Mobility CSVs with columns:
+%       Legacy 3-file mobility CSV inputs for unit Fx, Fy, Fz.
+%   mobilityPaths
+%       Ordered cell array / string array of one or more mobility CSVs.
+%       Each CSV uses columns:
 %       freq_hz,re0,im0,re1,im1,...
+%       The order of the files defines the reconstructed load-case order.
 %   flightInput
 %       Either:
 %       1) A flight CSV path with columns:
@@ -32,6 +41,7 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 %       skip_zero_hz          skip the DC bin, default = true
 %       f_min_hz              optional lower analysis limit
 %       f_max_hz              optional upper analysis limit
+%       load_case_names       optional names for plots / CSV export, default = file basenames
 %       solve_on_frf_grid     solve only at the FRF frequency lines, default = false
 %       fft_window            'hann' or 'boxcar', default = 'hann'
 %       plot_results          plot reconstructed forces + diagnostics, default = false
@@ -53,9 +63,11 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 %
 % Outputs
 %   result
-%       Struct aligned with the Python pipeline fields:
+%       Struct aligned with the legacy Python-style fields plus MATLAB-only
+%       load-case metadata:
 %       freqs_hz, F_hat, a_meas_fft, a_pred_fft, cond_number,
-%       singular_values, mac_xy, mac_xz, mac_yz, response_mac,
+%       singular_values, column_mac, max_column_mac, mac_xy, mac_xz,
+%       mac_yz, response_mac, load_case_names,
 %       relative_residual, valid_mask, fs_hz, t_start, t_end,
 %       selected measured/predicted accelerations, preprocessing info,
 %       and optional lambda-sweep diagnostics
@@ -70,13 +82,15 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 %   [result, inputs] = reconstruct_forces_from_flight_csv( ...
 %       'mobility_Fx.csv', 'mobility_Fy.csv', 'mobility_Fz.csv', 'flight.csv', opts);
 %
+%   mobilityPaths = {'bolt01_Fz.csv', 'bolt02_Fz.csv', 'bolt03_Fz.csv', 'bolt04_Fz.csv'};
+%   [result, inputs] = reconstruct_forces_from_flight_csv( ...
+%       mobilityPaths, 'flight.csv', opts);
+%
 %   matFiles = {'ch01.mat', 'ch02.mat', 'ch03.mat'};
 %   [result, inputs] = reconstruct_forces_from_flight_csv( ...
 %       'mobility_Fx.csv', 'mobility_Fy.csv', 'mobility_Fz.csv', matFiles, opts);
 
-    if nargin < 5 || isempty(opts)
-        opts = struct();
-    end
+    [mobility_paths, flightInput, opts, is_legacy_triplet] = parse_reconstruction_inputs(varargin{:});
     if ~isstruct(opts)
         error('opts must be a struct when provided.');
     end
@@ -91,17 +105,16 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
         fprintf('---------------------------------------------\n');
     end
 
-    assert_file_exists(pathFx, 'pathFx');
-    assert_file_exists(pathFy, 'pathFy');
-    assert_file_exists(pathFz, 'pathFz');
+    assert_path_list_exists(mobility_paths, 'mobilityPaths');
     assert_flight_input_exists(flightInput, 'flightInput');
 
     stage_timer = tic;
-    log_progress(progress_enabled, 'Loading mobility CSV triplet...\n');
-    [frf_freqs_hz, H_input] = load_mobility_csv_triplet(pathFx, pathFy, pathFz);
+    log_progress(progress_enabled, 'Loading %d mobility CSV file(s)...\n', numel(mobility_paths));
+    [frf_freqs_hz, H_input] = load_mobility_csv_stack(mobility_paths);
+    load_case_names = resolve_load_case_names(opts, mobility_paths, size(H_input, 3), is_legacy_triplet);
     timing.load_mobility_sec = toc(stage_timer);
-    log_progress(progress_enabled, 'Loaded mobility CSVs: %d frequencies, %d sensors in %s.\n', ...
-        numel(frf_freqs_hz), size(H_input, 2), format_duration(timing.load_mobility_sec));
+    log_progress(progress_enabled, 'Loaded mobility CSVs: %d frequencies, %d sensors, %d load cases in %s.\n', ...
+        numel(frf_freqs_hz), size(H_input, 2), size(H_input, 3), format_duration(timing.load_mobility_sec));
 
     stage_timer = tic;
     log_progress(progress_enabled, 'Loading flight input...\n');
@@ -187,11 +200,15 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
 
     n_freq = numel(freqs_hz);
     n_sensors = size(a_meas_fft, 2);
+    n_loads = size(A_fft, 3);
+    n_singular = min(n_sensors, n_loads);
 
-    F_hat = complex(zeros(n_freq, 3));
+    F_hat = complex(zeros(n_freq, n_loads));
     a_pred_fft = complex(zeros(n_freq, n_sensors));
     cond_number = NaN(n_freq, 1);
-    singular_values = NaN(n_freq, 3);
+    singular_values = NaN(n_freq, n_singular);
+    column_mac = NaN(n_freq, n_loads, n_loads);
+    max_column_mac = NaN(n_freq, 1);
     mac_xy = NaN(n_freq, 1);
     mac_xz = NaN(n_freq, 1);
     mac_yz = NaN(n_freq, 1);
@@ -224,10 +241,13 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     for solve_idx = 1:n_solve
         k = solve_indices(solve_idx);
         fk = freqs_hz(k);
-        Ak = reshape(A_fft(k, :, :), n_sensors, 3);
+        Ak = reshape(A_fft(k, :, :), n_sensors, n_loads);
 
         ak = a_meas_fft(k, :).';
-        [mac_xy(k), mac_xz(k), mac_yz(k)] = column_mac_pairs(Ak);
+        column_mac_k = column_mac_matrix(Ak);
+        column_mac(k, :, :) = column_mac_k;
+        max_column_mac(k) = max_offdiag_column_mac(column_mac_k);
+        [mac_xy(k), mac_xz(k), mac_yz(k)] = legacy_column_mac_pairs(column_mac_k);
 
         s = svd(Ak, 'econ');
         singular_values(k, 1:numel(s)) = s(:).';
@@ -307,6 +327,8 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     result.solve_grid_source = solve_grid_source;
     result.cond_number = cond_number;
     result.singular_values = singular_values;
+    result.column_mac = column_mac;
+    result.max_column_mac = max_column_mac;
     result.mac_xy = mac_xy;
     result.mac_xz = mac_xz;
     result.mac_yz = mac_yz;
@@ -321,15 +343,20 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     result.acc_meas_sel_si = acc_sel_si;
     result.acc_pred_sel_g = acc_pred_sel_g;
     result.acc_pred_sel_si = acc_pred_sel_si;
+    result.load_case_names = load_case_names;
     result.preprocessing = preprocessing;
     result.lambda_sweep = lambda_sweep;
     timing.reconstruction_sec = toc(overall_timer);
     result.timing = timing;
 
     inputs = struct();
-    inputs.path_fx = pathFx;
-    inputs.path_fy = pathFy;
-    inputs.path_fz = pathFz;
+    inputs.mobility_paths = mobility_paths;
+    inputs.load_case_names = load_case_names;
+    if is_legacy_triplet
+        inputs.path_fx = mobility_paths{1};
+        inputs.path_fy = mobility_paths{2};
+        inputs.path_fz = mobility_paths{3};
+    end
     inputs.path_flight = flightInput;
     inputs.flight_input = flightInput;
     inputs.flight_input_type = flight_input_type;
@@ -347,7 +374,8 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(pathFx, pathFy, p
     if ~isempty(opts.save_force_csv)
         stage_timer = tic;
         log_progress(progress_enabled, 'Writing force spectrum CSV: %s\n', opts.save_force_csv);
-        write_force_spectrum_csv(result.freqs_hz, result.F_hat, result.valid_mask, opts.save_force_csv);
+        write_force_spectrum_csv(result.freqs_hz, result.F_hat, result.valid_mask, ...
+            result.load_case_names, opts.save_force_csv);
         log_progress(progress_enabled, 'Wrote force spectrum CSV in %s.\n', format_duration(toc(stage_timer)));
     end
     if ~isempty(opts.save_diagnostics_csv)
@@ -385,6 +413,7 @@ function opts = resolve_options(opts, time_s)
     defaults.skip_zero_hz = true;
     defaults.f_min_hz = [];
     defaults.f_max_hz = [];
+    defaults.load_case_names = {};
     defaults.solve_on_frf_grid = false;
     defaults.fft_window = 'hann';
     defaults.plot_results = false;
@@ -423,6 +452,7 @@ function opts = resolve_options(opts, time_s)
     opts.solve_on_frf_grid = logical(opts.solve_on_frf_grid);
     opts.plot_psd_xscale = validate_axis_scale_option(opts.plot_psd_xscale, 'opts.plot_psd_xscale');
     opts.plot_psd_yscale = validate_axis_scale_option(opts.plot_psd_yscale, 'opts.plot_psd_yscale');
+    opts.load_case_names = normalize_optional_name_list(opts.load_case_names, 'opts.load_case_names');
 
     if ~isempty(opts.highpass_hz)
         if ~isscalar(opts.highpass_hz) || ~isnumeric(opts.highpass_hz) || ...
@@ -599,7 +629,7 @@ function lambda_sweep = evaluate_lambda_sweep(A_fft, a_meas_fft, freqs_hz, solve
 
         for eval_idx = 1:numel(eval_indices)
             k = eval_indices(eval_idx);
-            Ak = reshape(A_fft(k, :, :), n_sensors, 3);
+            Ak = reshape(A_fft(k, :, :), n_sensors, size(A_fft, 3));
             ak = a_meas_fft(k, :).';
             Fk = solve_force_complex(Ak, ak, lam);
             a_pred = Ak * Fk;
@@ -621,9 +651,89 @@ function lambda_sweep = evaluate_lambda_sweep(A_fft, a_meas_fft, freqs_hz, solve
 end
 
 
+function [mobility_paths, flightInput, opts, is_legacy_triplet] = parse_reconstruction_inputs(varargin)
+    if nargin < 2
+        error(['Usage: reconstruct_forces_from_flight_csv(pathFx, pathFy, pathFz, flightInput, opts) ' ...
+            'or reconstruct_forces_from_flight_csv(mobilityPaths, flightInput, opts).']);
+    end
+
+    is_legacy_triplet = false;
+    if (nargin == 2 || nargin == 3) && is_path_list_input(varargin{1})
+        mobility_paths = normalize_path_list(varargin{1}, 'mobilityPaths');
+        flightInput = varargin{2};
+        if nargin >= 3
+            opts = varargin{3};
+        else
+            opts = struct();
+        end
+        return;
+    end
+
+    if nargin == 4 || nargin == 5
+        mobility_paths = {
+            normalize_scalar_path(varargin{1}, 'pathFx')
+            normalize_scalar_path(varargin{2}, 'pathFy')
+            normalize_scalar_path(varargin{3}, 'pathFz')
+        };
+        flightInput = varargin{4};
+        if nargin >= 5
+            opts = varargin{5};
+        else
+            opts = struct();
+        end
+        is_legacy_triplet = true;
+        return;
+    end
+
+    error(['Usage: reconstruct_forces_from_flight_csv(pathFx, pathFy, pathFz, flightInput, opts) ' ...
+        'or reconstruct_forces_from_flight_csv(mobilityPaths, flightInput, opts).']);
+end
+
+
+function tf = is_path_list_input(value)
+    tf = iscell(value) || (isstring(value) && ~isscalar(value));
+end
+
+
+function paths = normalize_path_list(value, argName)
+    if isstring(value)
+        value = cellstr(value(:));
+    end
+    if ~iscell(value) || isempty(value)
+        error('%s must be a non-empty cell array or string array of file paths.', argName);
+    end
+
+    paths = cell(numel(value), 1);
+    for idx = 1:numel(value)
+        paths{idx} = normalize_scalar_path(value{idx}, sprintf('%s{%d}', argName, idx));
+    end
+end
+
+
+function pathValue = normalize_scalar_path(value, argName)
+    if isstring(value)
+        if ~isscalar(value)
+            error('%s must be a scalar string or character vector.', argName);
+        end
+        value = char(value);
+    end
+    if ~ischar(value) || isempty(strtrim(value))
+        error('%s must be a non-empty file path.', argName);
+    end
+    pathValue = strtrim(value);
+end
+
+
 function assert_file_exists(pathValue, argName)
     if ~isfile(pathValue)
         error('%s does not exist: %s', argName, pathValue);
+    end
+end
+
+
+function assert_path_list_exists(paths, argName)
+    for idx = 1:numel(paths)
+        assert_file_exists(paths{idx}, sprintf('%s{%d}', argName, idx));
     end
 end
 
@@ -652,10 +762,9 @@ function assert_flight_input_exists(flightInput, argName)
 end
 
 
-function [freqs_hz, H] = load_mobility_csv_triplet(pathFx, pathFy, pathFz)
-    paths = {pathFx, pathFy, pathFz};
+function [freqs_hz, H] = load_mobility_csv_stack(paths)
     freqs_hz = [];
-    stacks = cell(1, 3);
+    stacks = cell(1, numel(paths));
 
     for idx = 1:numel(paths)
         data = read_numeric_csv(paths{idx}, 1);
@@ -674,7 +783,85 @@ function [freqs_hz, H] = load_mobility_csv_triplet(pathFx, pathFy, pathFz)
         stacks{idx} = complex_cols;
     end
 
-    H = cat(3, stacks{1}, stacks{2}, stacks{3});
+    H = cat(3, stacks{:});
+end
+
+
+function [freqs_hz, H] = load_mobility_csv_triplet(pathFx, pathFy, pathFz)
+    [freqs_hz, H] = load_mobility_csv_stack({pathFx, pathFy, pathFz});
+end
+
+
+function load_case_names = resolve_load_case_names(opts, mobility_paths, n_loads, is_legacy_triplet)
+    provided_names = {};
+    if isfield(opts, 'load_case_names')
+        provided_names = normalize_optional_name_list(opts.load_case_names, 'opts.load_case_names');
+    end
+
+    if ~isempty(provided_names)
+        if numel(provided_names) ~= n_loads
+            error('opts.load_case_names must have exactly %d entries.', n_loads);
+        end
+        load_case_names = provided_names(:).';
+        return;
+    end
+
+    if is_legacy_triplet && n_loads == 3
+        load_case_names = {'Fx', 'Fy', 'Fz'};
+        return;
+    end
+
+    load_case_names = derive_load_case_names_from_paths(mobility_paths);
+end
+
+
+function names = derive_load_case_names_from_paths(paths)
+    n = numel(paths);
+    names = cell(1, n);
+    used = containers.Map('KeyType', 'char', 'ValueType', 'double');
+    for idx = 1:n
+        [~, stem] = fileparts(paths{idx});
+        if isempty(stem)
+            stem = sprintf('load%d', idx);
+        end
+        base_name = stem;
+        if isKey(used, base_name)
+            used(base_name) = used(base_name) + 1;
+            stem = sprintf('%s_%d', base_name, used(base_name));
+        else
+            used(base_name) = 1;
+        end
+        names{idx} = stem;
+    end
+end
+
+
+function names = normalize_optional_name_list(value, argName)
+    if isempty(value)
+        names = {};
+        return;
+    end
+    if isstring(value)
+        value = cellstr(value(:));
+    end
+    if ~iscell(value)
+        error('%s must be empty, a cell array, or a string array.', argName);
+    end
+
+    names = cell(1, numel(value));
+    for idx = 1:numel(value)
+        name = value{idx};
+        if isstring(name)
+            if ~isscalar(name)
+                error('%s{%d} must be a scalar string or character vector.', argName, idx);
+            end
+            name = char(name);
+        end
+        if ~ischar(name) || isempty(strtrim(name))
+            error('%s{%d} must be a non-empty string.', argName, idx);
+        end
+        names{idx} = strtrim(name);
+    end
 end
 
 
@@ -1021,15 +1208,16 @@ function out = interp_complex_frequency(f_target_hz, f_source_hz, values, fill_v
 end
 
 
-function [mac_xy, mac_xz, mac_yz] = column_mac_pairs(A)
-    M = zeros(3, 3);
-    for i = 1:3
+function M = column_mac_matrix(A)
+    n_columns = size(A, 2);
+    M = zeros(n_columns, n_columns);
+    for i = 1:n_columns
         ci = A(:, i);
         nii = real(ci' * ci);
         if nii <= 0
             continue;
         end
-        for j = 1:3
+        for j = 1:n_columns
             cj = A(:, j);
             njj = real(cj' * cj);
             if njj <= 0
@@ -1039,10 +1227,35 @@ function [mac_xy, mac_xz, mac_yz] = column_mac_pairs(A)
             M(i, j) = abs(cross) .^ 2 / (nii * njj);
         end
     end
+end
 
-    mac_xy = M(1, 2);
-    mac_xz = M(1, 3);
-    mac_yz = M(2, 3);
+
+function value = max_offdiag_column_mac(M)
+    if isempty(M) || size(M, 1) < 2
+        value = NaN;
+        return;
+    end
+    mask = ~eye(size(M, 1));
+    values = M(mask);
+    if isempty(values)
+        value = NaN;
+    else
+        value = max(values);
+    end
+end
+
+
+function [mac_xy, mac_xz, mac_yz] = legacy_column_mac_pairs(M)
+    mac_xy = NaN;
+    mac_xz = NaN;
+    mac_yz = NaN;
+    if size(M, 1) >= 2
+        mac_xy = M(1, 2);
+    end
+    if size(M, 1) >= 3
+        mac_xz = M(1, 3);
+        mac_yz = M(2, 3);
+    end
 end
 
 
@@ -1052,7 +1265,7 @@ function F = solve_force_complex(A, a, lam)
     ATa = AH * a;
 
     if lam > 0
-        ATA = ATA + (lam ^ 2) * eye(3);
+        ATA = ATA + (lam ^ 2) * eye(size(A, 2));
     end
 
     if rcond(ATA) > 1e-12
@@ -1084,6 +1297,9 @@ function print_summary(result)
     if isfield(result, 'solve_grid_source')
         fprintf('Solve frequency grid         : %s\n', strrep(result.solve_grid_source, '_', ' '));
     end
+    if isfield(result, 'load_case_names')
+        fprintf('Load cases                  : %d\n', numel(result.load_case_names));
+    end
     if isfield(result, 'preprocessing') && result.preprocessing.highpass_enabled
         fprintf('High-pass filter            : %d-pole %.3f Hz (%s)\n', ...
             result.preprocessing.highpass_order, result.preprocessing.highpass_hz, result.preprocessing.method);
@@ -1092,6 +1308,9 @@ function print_summary(result)
     fprintf('Median response MAC          : %.6f\n', median_finite(result.response_mac(valid)));
     fprintf('Median relative residual     : %.6f\n', median_finite(result.relative_residual(valid)));
     fprintf('Median condition number      : %.6f\n', median_finite(result.cond_number(valid)));
+    if isfield(result, 'max_column_mac')
+        fprintf('Median max column MAC        : %.6f\n', median_finite(result.max_column_mac(valid)));
+    end
     if isfield(result, 'lambda_sweep') && isfield(result.lambda_sweep, 'n_eval_bins') && result.lambda_sweep.n_eval_bins > 0
         fprintf('Lambda sweep eval bins       : %d\n', result.lambda_sweep.n_eval_bins);
     end
@@ -1164,14 +1383,18 @@ end
 
 
 function plot_reconstruction_results(result, inputs)
-    force_names = {'Fx', 'Fy', 'Fz'};
+    force_names = result.load_case_names;
     valid = result.valid_mask;
     freq = result.freqs_hz;
+    n_loads = numel(force_names);
+    n_panels = n_loads + 3;
+    n_cols = min(4, max(2, ceil(sqrt(n_panels))));
+    n_rows = ceil(n_panels / n_cols);
 
-    figure('Name', 'Force Reconstruction from Flight CSV', 'Color', 'w');
+    figure('Name', 'Force Reconstruction from Flight Data', 'Color', 'w');
 
-    for force_idx = 1:3
-        subplot(2, 3, force_idx);
+    for force_idx = 1:n_loads
+        subplot(n_rows, n_cols, force_idx);
         if any(valid)
             plot(freq(valid), abs(result.F_hat(valid, force_idx)), 'LineWidth', 1.25);
         else
@@ -1179,11 +1402,11 @@ function plot_reconstruction_results(result, inputs)
         end
         xlabel('Frequency (Hz)');
         ylabel('|F| (N)');
-        title(sprintf('%s magnitude', force_names{force_idx}));
+        title(sprintf('%s magnitude', force_names{force_idx}), 'Interpreter', 'none');
         grid on;
     end
 
-    subplot(2, 3, 4);
+    subplot(n_rows, n_cols, n_loads + 1);
     plot(freq(valid), result.response_mac(valid), 'b-', 'LineWidth', 1.25);
     xlabel('Frequency (Hz)');
     ylabel('MAC');
@@ -1191,14 +1414,14 @@ function plot_reconstruction_results(result, inputs)
     grid on;
     ylim([0, 1.05]);
 
-    subplot(2, 3, 5);
+    subplot(n_rows, n_cols, n_loads + 2);
     plot(freq(valid), result.relative_residual(valid), 'm-', 'LineWidth', 1.25);
     xlabel('Frequency (Hz)');
     ylabel('Relative residual');
     title('Prediction residual');
     grid on;
 
-    subplot(2, 3, 6);
+    subplot(n_rows, n_cols, n_loads + 3);
     cond_values = result.cond_number(valid);
     cond_values = max(cond_values, 1.0);
     semilogy(freq(valid), cond_values, 'k-', 'LineWidth', 1.25);
@@ -1658,21 +1881,28 @@ function x = irfft_matrix(one_sided_spectrum, n_time)
 end
 
 
-function write_force_spectrum_csv(freqs_hz, F_hat, valid_mask, path_out)
+function write_force_spectrum_csv(freqs_hz, F_hat, valid_mask, load_case_names, path_out)
     fid = fopen(path_out, 'w');
     if fid < 0
         error('Could not open %s for writing.', path_out);
     end
     cleanup = onCleanup(@() fclose(fid));
 
-    fprintf(fid, 'freq_hz,Fx_re,Fx_im,Fy_re,Fy_im,Fz_re,Fz_im,valid\n');
+    header_parts = {'freq_hz'};
+    for load_idx = 1:numel(load_case_names)
+        token = sanitize_csv_token(load_case_names{load_idx});
+        header_parts{end + 1} = sprintf('%s_re', token); %#ok<AGROW>
+        header_parts{end + 1} = sprintf('%s_im', token); %#ok<AGROW>
+    end
+    header_parts{end + 1} = 'valid';
+    fprintf(fid, '%s\n', strjoin(header_parts, ','));
+
     for k = 1:numel(freqs_hz)
-        fprintf(fid, '%.16g,%.16g,%.16g,%.16g,%.16g,%.16g,%.16g,%d\n', ...
-            freqs_hz(k), ...
-            real(F_hat(k, 1)), imag(F_hat(k, 1)), ...
-            real(F_hat(k, 2)), imag(F_hat(k, 2)), ...
-            real(F_hat(k, 3)), imag(F_hat(k, 3)), ...
-            logical_to_int(valid_mask(k)));
+        fprintf(fid, '%.16g', freqs_hz(k));
+        for load_idx = 1:size(F_hat, 2)
+            fprintf(fid, ',%.16g,%.16g', real(F_hat(k, load_idx)), imag(F_hat(k, load_idx)));
+        end
+        fprintf(fid, ',%d\n', logical_to_int(valid_mask(k)));
     end
 end
 
@@ -1684,19 +1914,41 @@ function write_reconstruction_diagnostics_csv(result, path_out)
     end
     cleanup = onCleanup(@() fclose(fid));
 
-    fprintf(fid, ['freq_hz,Fx_re,Fx_im,Fy_re,Fy_im,Fz_re,Fz_im,cond_number,' ...
-        'sigma1,sigma2,sigma3,mac_xy,mac_xz,mac_yz,response_mac,relative_residual,valid\n']);
+    header_parts = {'freq_hz'};
+    for load_idx = 1:numel(result.load_case_names)
+        token = sanitize_csv_token(result.load_case_names{load_idx});
+        header_parts{end + 1} = sprintf('%s_re', token); %#ok<AGROW>
+        header_parts{end + 1} = sprintf('%s_im', token); %#ok<AGROW>
+    end
+    header_parts{end + 1} = 'cond_number';
+    for sigma_idx = 1:size(result.singular_values, 2)
+        header_parts{end + 1} = sprintf('sigma%d', sigma_idx); %#ok<AGROW>
+    end
+    header_parts{end + 1} = 'max_column_mac';
+    if numel(result.load_case_names) == 3
+        header_parts{end + 1} = 'mac_xy'; %#ok<AGROW>
+        header_parts{end + 1} = 'mac_xz'; %#ok<AGROW>
+        header_parts{end + 1} = 'mac_yz'; %#ok<AGROW>
+    end
+    header_parts{end + 1} = 'response_mac';
+    header_parts{end + 1} = 'relative_residual';
+    header_parts{end + 1} = 'valid';
+    fprintf(fid, '%s\n', strjoin(header_parts, ','));
+
     for k = 1:numel(result.freqs_hz)
-        fprintf(fid, ['%.16g,%.16g,%.16g,%.16g,%.16g,%.16g,%.16g,%.16g,' ...
-            '%.16g,%.16g,%.16g,%.16g,%.16g,%.16g,%.16g,%.16g,%d\n'], ...
-            result.freqs_hz(k), ...
-            real(result.F_hat(k, 1)), imag(result.F_hat(k, 1)), ...
-            real(result.F_hat(k, 2)), imag(result.F_hat(k, 2)), ...
-            real(result.F_hat(k, 3)), imag(result.F_hat(k, 3)), ...
-            result.cond_number(k), ...
-            result.singular_values(k, 1), result.singular_values(k, 2), result.singular_values(k, 3), ...
-            result.mac_xy(k), result.mac_xz(k), result.mac_yz(k), ...
-            result.response_mac(k), result.relative_residual(k), ...
+        fprintf(fid, '%.16g', result.freqs_hz(k));
+        for load_idx = 1:size(result.F_hat, 2)
+            fprintf(fid, ',%.16g,%.16g', real(result.F_hat(k, load_idx)), imag(result.F_hat(k, load_idx)));
+        end
+        fprintf(fid, ',%.16g', result.cond_number(k));
+        for sigma_idx = 1:size(result.singular_values, 2)
+            fprintf(fid, ',%.16g', result.singular_values(k, sigma_idx));
+        end
+        fprintf(fid, ',%.16g', result.max_column_mac(k));
+        if numel(result.load_case_names) == 3
+            fprintf(fid, ',%.16g,%.16g,%.16g', result.mac_xy(k), result.mac_xz(k), result.mac_yz(k));
+        end
+        fprintf(fid, ',%.16g,%.16g,%d\n', result.response_mac(k), result.relative_residual(k), ...
             logical_to_int(result.valid_mask(k)));
     end
 end
@@ -1707,6 +1959,20 @@ function out = logical_to_int(value)
         out = 1;
     else
         out = 0;
+    end
+end
+
+
+function token = sanitize_csv_token(text)
+    token = regexprep(strtrim(text), '[^A-Za-z0-9_]+', '_');
+    token = regexprep(token, '_+', '_');
+    token = regexprep(token, '^_+', '');
+    token = regexprep(token, '_+$', '');
+    if isempty(token)
+        token = 'load';
+    end
+    if ~isletter(token(1))
+        token = ['load_' token];
     end
 end
 

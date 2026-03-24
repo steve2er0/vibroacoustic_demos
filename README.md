@@ -4,7 +4,7 @@ Vibroacoustic demos plus a **force reconstruction** toolkit (`force_recon/`).
 
 ## Force reconstruction
 
-Estimate three translational interface forces from **flight accelerations (g)** and **mobility** **H** = *v/F* from three NASTRAN-style CSVs (unit **Fx**, **Fy**, **Fz**). Flight data can come from a single CSV or ordered per-channel MATLAB `.mat` files. For workflow/plumbing tests, Python can also synthesize a dummy **H = ones()** mobility tensor from the flight timebase.
+Estimate interface forces from **flight accelerations (g)** and **mobility** **H** = *v/F* from NASTRAN-style CSVs. The standard Python workflow uses three translational unit-load files (**Fx**, **Fy**, **Fz**). The MATLAB flight pipeline also supports an arbitrary ordered list of mobility CSVs, which is useful for distributed interface models such as individual bolt loads. Flight data can come from a single CSV or ordered per-channel MATLAB `.mat` files. For workflow/plumbing tests, Python can also synthesize a dummy **H = ones()** mobility tensor from the flight timebase.
 
 ### Setup
 
@@ -77,7 +77,7 @@ Then in the GUI use `examples/data/mobility_Fx.csv` (and **Fy** / **Fz**) plus `
 
 ### MATLAB (flight CSV or per-channel MAT workflow)
 
-`matlab/reconstruct_forces_from_flight_data.m` is the preferred MATLAB entrypoint for the real pipeline. It loads the same **Fx/Fy/Fz mobility CSVs** as the Python app and accepts either:
+`matlab/reconstruct_forces_from_flight_data.m` is the preferred MATLAB entrypoint for the real pipeline. It accepts either the legacy **Fx/Fy/Fz** mobility triplet or an ordered list of one or more mobility CSVs, plus either:
 
 - A flight CSV: `time_s,ch0,ch1,...` in **g**
 - An ordered list of per-channel `.mat` files, one file per flight channel
@@ -149,6 +149,20 @@ flightMatFiles = {
     'mobility_Fx.csv', 'mobility_Fy.csv', 'mobility_Fz.csv', flightMatFiles, opts);
 ```
 
+Arbitrary load-case example for a 4-bolt `Fz` model:
+
+```matlab
+mobilityPaths = {
+    'bolt01_Fz.csv'
+    'bolt02_Fz.csv'
+    'bolt03_Fz.csv'
+    'bolt04_Fz.csv'
+};
+
+[result, inputs] = reconstruct_forces_from_flight_data( ...
+    mobilityPaths, flightMatFiles, opts);
+```
+
 For longer MATLAB runs, `show_progress=true` prints stage-level timings plus periodic
 solve-loop progress with elapsed time and ETA.
 
@@ -173,7 +187,9 @@ This section summarizes the main concepts and options used by the Python and MAT
 
 #### End-to-end workflow
 
-1. Load three mobility files, one each for unit `Fx`, `Fy`, and `Fz`.
+1. Load the mobility files.
+   - Standard Python / legacy MATLAB case: three files for unit `Fx`, `Fy`, and `Fz`
+   - General MATLAB case: any ordered list of mobility CSVs representing the load cases you want to solve
 2. Load flight acceleration data from either:
    - one CSV with `time_s,ch0,ch1,...`
    - or ordered per-channel MAT files with `amp`, `t`, and `sr`
@@ -193,7 +209,8 @@ This section summarizes the main concepts and options used by the Python and MAT
 
 - Mobility CSV format:
   - `freq_hz,re0,im0,re1,im1,...`
-  - one file for `Fx`, one for `Fy`, one for `Fz`
+  - one file per load case
+  - in the standard 3-axis workflow: one file for `Fx`, one for `Fy`, one for `Fz`
   - real/imaginary pairs correspond to response channels in the same order as the flight channels
 - Flight CSV format:
   - `time_s,ch0,ch1,ch2,...`
@@ -226,9 +243,9 @@ a_k \approx A_k F_k
 
 where:
 
-- `A_k` is the complex accelerance matrix at one frequency, shaped `n_sensors x 3`
+- `A_k` is the complex accelerance matrix at one frequency, shaped `n_sensors x n_loads`
 - `a_k` is the measured complex acceleration vector across sensors
-- `F_k` is the unknown complex force vector `[Fx, Fy, Fz]^T`
+- `F_k` is the unknown complex load vector for the chosen force/load cases
 
 Because the system is typically overdetermined, the code uses a complex least-squares solve. The key step is the Hermitian transpose:
 
@@ -283,11 +300,12 @@ Practical guidance:
 - `singular_values`:
   - singular values of `A`
   - show how much independent force-direction information is available at that frequency
-  - a very small third singular value usually indicates weak observability in one direction
+  - a very small trailing singular value usually indicates weak observability in one load direction
+- `max_column_mac`:
+  - largest off-diagonal column-to-column MAC in the load-case matrix at that frequency
+  - values near `1` mean at least two load cases produce very similar sensor response patterns, which makes force separation harder
 - `mac_xy`, `mac_xz`, `mac_yz`:
-  - column-to-column MAC values for the three columns of `A`
-  - these indicate how linearly similar the force-direction response columns are
-  - values near `1` mean two load directions produce very similar sensor response patterns, which makes force separation harder
+  - legacy pairwise column MAC values retained for the standard 3-load `Fx/Fy/Fz` case
 
 #### Meaning of the main options
 
@@ -301,6 +319,8 @@ Practical guidance:
   - skips the DC bin, which is usually the right choice for this type of frequency-domain inversion
 - `f_min_hz`, `f_max_hz`:
   - optional frequency limits applied after the FFT grid is formed
+- `load_case_names`:
+  - optional labels for the mobility files / reconstructed loads in MATLAB plots and CSV exports
 - `solve_on_frf_grid`:
   - when `false`, the solve runs on the native flight FFT grid and the FRFs are interpolated onto it
   - when `true`, the solve runs only on the FRF frequency lines, which is useful when the model is exported on coarse spacing such as `1 Hz` from SOL111

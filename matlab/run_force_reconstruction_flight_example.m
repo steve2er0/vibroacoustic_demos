@@ -2,6 +2,9 @@
 %
 % Example driver for the real flight-data MATLAB pipeline.
 % Replace the default CSV flight input with your own CSV or ordered .mat files.
+% The legacy example below uses Fx/Fy/Fz mobility CSVs, but you can also pass
+% an ordered cell array of arbitrary mobility CSVs to reconstruct multiple bolt
+% or interface load cases.
 
 clear;
 clc;
@@ -12,6 +15,17 @@ dataDir = fullfile(repoRoot, 'examples', 'data');
 fxPath = fullfile(dataDir, 'mobility_Fx.csv');
 fyPath = fullfile(dataDir, 'mobility_Fy.csv');
 fzPath = fullfile(dataDir, 'mobility_Fz.csv');
+mobilityInput = {fxPath, fyPath, fzPath};
+
+% Replace mobilityInput with any ordered list of load-case CSVs if you want
+% to reconstruct more than the legacy Fx/Fy/Fz set, for example:
+% mobilityInput = {
+%     '/path/to/bolt01_Fz.csv'
+%     '/path/to/bolt02_Fz.csv'
+%     '/path/to/bolt03_Fz.csv'
+%     '/path/to/bolt04_Fz.csv'
+% };
+
 flightPath = fullfile(dataDir, 'flight_segment.csv');
 flightInput = flightPath;
 
@@ -28,7 +42,7 @@ flightInput = flightPath;
 %     '/path/to/ch03.mat'
 % };
 
-requiredPaths = {fxPath, fyPath, fzPath};
+requiredPaths = mobilityInput(:).';
 if ischar(flightInput) || (isstring(flightInput) && isscalar(flightInput))
     requiredPaths{end + 1} = char(flightInput);
 elseif isstring(flightInput)
@@ -73,7 +87,7 @@ opts.progress_interval_sec = 2.0;
 % opts.save_diagnostics_csv = fullfile(repoRoot, 'reconstruction_diagnostics_matlab.csv');
 
 [result, inputs] = reconstruct_forces_from_flight_data( ...
-    fxPath, fyPath, fzPath, flightInput, opts);
+    mobilityInput, flightInput, opts);
 
 fprintf('Processed %d flight channels from %.3f s to %.3f s.\n', ...
     numel(inputs.channel_names), result.t_start, result.t_end);
