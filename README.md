@@ -96,6 +96,7 @@ The MATLAB pipeline runs the same windowed frequency-by-frequency inversion and 
 
 - `F_hat_spectrum.csv`
 - `reconstruction_diagnostics.csv`
+- a NASTRAN `TABLED1` include file with real/imaginary force spectra in `N` or `lbf`
 
 When `plot_results=true`, MATLAB now also opens a measured-versus-predicted acceleration
 comparison for a selected response channel, using the reconstructed forces to synthesize
@@ -133,6 +134,9 @@ opts = struct( ...
     'plot_psd_fmax_hz', 3000.0, ...
     'psd_nperseg', 2048, ...
     'plot_lambda_sweep', true, ...
+    'save_nastran_tabled1', 'reconstructed_forces_nastran.inc', ...
+    'nastran_force_unit', 'lbf', ...
+    'nastran_table_id_start', 1001, ...
     'show_progress', true, ...
     'progress_interval_sec', 2.0, ...
     'plot_results', true);
@@ -235,6 +239,16 @@ If your NASTRAN model is in `lbf` and `in`, the expected mobility units are:
 - accelerance: `(in/s^2)/lbf`
 
 This toolkit normally expects mobility as input. If you already have SI mobility, set `mobility_is_si=true` in MATLAB or the equivalent GUI option on the Python side.
+
+The reconstructed force spectrum is solved internally in `N`. If you want to replay it
+in an `lbf-in` SOL111 model, export with:
+
+- `save_nastran_tabled1 = 'your_file.inc'`
+- `nastran_force_unit = 'lbf'`
+
+The MATLAB exporter writes one real/imaginary `TABLED1` pair per reconstructed load case.
+Use all reconstructed load cases together in the same SOL111 replay run so the original
+complex phase relationship is preserved.
 
 For workflow testing without measured FRFs, the Python GUIs and CLI also support a dummy `H = ones()` mode.
 
@@ -352,6 +366,15 @@ Practical guidance:
   - limits how many frequency bins are used in the sweep summary so large datasets stay responsive
 - `show_progress`, `progress_interval_sec`:
   - console progress/timing output for MATLAB, including solve-loop ETA updates
+- `save_nastran_tabled1`:
+  - optional MATLAB-only path for a NASTRAN include file containing one real/imaginary `TABLED1` pair per reconstructed load case
+  - only the valid solved frequency bins are written
+- `nastran_force_unit`:
+  - force unit used in the MATLAB NASTRAN export
+  - use `'lbf'` for an `lbf-in` model or `'N'` for an SI model
+- `nastran_table_id_start`:
+  - first `TABLED1` ID used by the MATLAB NASTRAN export
+  - each load case consumes two IDs: one for the real part and one for the imaginary part
 
 #### Measured versus predicted acceleration
 

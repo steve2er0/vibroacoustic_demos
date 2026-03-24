@@ -65,6 +65,11 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
 %       progress_interval_sec progress update period during solve loop, default = 2.0
 %       save_force_csv        optional output path for F_hat CSV
 %       save_diagnostics_csv  optional output path for diagnostics CSV
+%       save_nastran_tabled1  optional output path for NASTRAN TABLED1 include
+%       nastran_force_unit    force units for NASTRAN export: 'N' or 'lbf',
+%                             default = 'N'
+%       nastran_table_id_start starting TABLED1 ID for NASTRAN export,
+%                              default = 1001
 %
 % Outputs
 %   result
@@ -75,6 +80,7 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
 %       mac_yz, response_mac, load_case_names, active_channel_idx,
 %       relative_residual, valid_mask, fs_hz, t_start, t_end,
 %       selected measured/predicted accelerations, preprocessing info,
+%       optional NASTRAN-export force spectrum in opts.nastran_force_unit,
 %       and optional lambda-sweep diagnostics
 %   inputs
 %       Loaded source data and resolved options. When plot_results=true,
@@ -362,6 +368,8 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
     result.load_case_names = load_case_names;
     result.preprocessing = preprocessing;
     result.lambda_sweep = lambda_sweep;
+    result.F_hat_nastran = convert_force_from_si(result.F_hat, opts.nastran_force_unit);
+    result.nastran_force_unit = upper(opts.nastran_force_unit);
     timing.reconstruction_sec = toc(overall_timer);
     result.timing = timing;
 
@@ -401,6 +409,15 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
         log_progress(progress_enabled, 'Writing diagnostics CSV: %s\n', opts.save_diagnostics_csv);
         write_reconstruction_diagnostics_csv(result, opts.save_diagnostics_csv);
         log_progress(progress_enabled, 'Wrote diagnostics CSV in %s.\n', format_duration(toc(stage_timer)));
+    end
+    if ~isempty(opts.save_nastran_tabled1)
+        stage_timer = tic;
+        log_progress(progress_enabled, 'Writing NASTRAN TABLED1 include: %s\n', opts.save_nastran_tabled1);
+        write_nastran_force_tabled1( ...
+            result.freqs_hz, result.F_hat, result.valid_mask, result.load_case_names, ...
+            opts.save_nastran_tabled1, opts.nastran_force_unit, opts.nastran_table_id_start);
+        log_progress(progress_enabled, 'Wrote NASTRAN TABLED1 include in %s.\n', ...
+            format_duration(toc(stage_timer)));
     end
     if opts.plot_results
         stage_timer = tic;
@@ -453,6 +470,9 @@ function opts = resolve_options(opts, time_s)
     defaults.progress_interval_sec = 2.0;
     defaults.save_force_csv = '';
     defaults.save_diagnostics_csv = '';
+    defaults.save_nastran_tabled1 = '';
+    defaults.nastran_force_unit = 'N';
+    defaults.nastran_table_id_start = 1001;
 
     names = fieldnames(defaults);
     for idx = 1:numel(names)
@@ -474,6 +494,7 @@ function opts = resolve_options(opts, time_s)
     opts.plot_psd_xscale = validate_axis_scale_option(opts.plot_psd_xscale, 'opts.plot_psd_xscale');
     opts.plot_psd_yscale = validate_axis_scale_option(opts.plot_psd_yscale, 'opts.plot_psd_yscale');
     opts.load_case_names = normalize_optional_name_list(opts.load_case_names, 'opts.load_case_names');
+    opts.nastran_force_unit = validate_force_unit_option(opts.nastran_force_unit, 'opts.nastran_force_unit');
 
     if ~isempty(opts.highpass_hz)
         if ~isscalar(opts.highpass_hz) || ~isnumeric(opts.highpass_hz) || ...
@@ -533,6 +554,11 @@ function opts = resolve_options(opts, time_s)
     if ~isscalar(opts.progress_interval_sec) || ~isnumeric(opts.progress_interval_sec) || ...
             ~isfinite(opts.progress_interval_sec) || opts.progress_interval_sec <= 0
         error('opts.progress_interval_sec must be a positive finite scalar.');
+    end
+    if ~isscalar(opts.nastran_table_id_start) || ~isnumeric(opts.nastran_table_id_start) || ...
+            ~isfinite(opts.nastran_table_id_start) || opts.nastran_table_id_start < 1 || ...
+            opts.nastran_table_id_start ~= round(opts.nastran_table_id_start)
+        error('opts.nastran_table_id_start must be a positive integer.');
     end
 end
 
@@ -2062,6 +2088,77 @@ function write_reconstruction_diagnostics_csv(result, path_out)
 end
 
 
+function write_nastran_force_tabled1(freqs_hz, F_hat, valid_mask, load_case_names, path_out, force_unit, table_id_start)
+    if numel(valid_mask) ~= numel(freqs_hz)
+        error('valid_mask must match the frequency vector length for NASTRAN export.');
+    end
+
+    export_mask = logical(valid_mask(:));
+    if ~any(export_mask)
+        error('No valid frequency bins are available for NASTRAN export.');
+    end
+
+    freqs_export = freqs_hz(export_mask);
+    F_export = convert_force_from_si(F_hat(export_mask, :), force_unit);
+
+    fid = fopen(path_out, 'w');
+    if fid < 0
+        error('Could not open %s for writing.', path_out);
+    end
+    cleanup = onCleanup(@() fclose(fid));
+
+    fprintf(fid, '$ Reconstructed complex force spectrum for NASTRAN include\n');
+    fprintf(fid, '$ Frequency units: Hz\n');
+    fprintf(fid, '$ Force units: %s\n', upper(force_unit));
+    fprintf(fid, '$ Each load case is exported as two TABLED1 entries: real and imaginary parts.\n');
+    fprintf(fid, '$ Replay all reconstructed load cases together in the same SOL111 run to preserve relative phase.\n');
+    fprintf(fid, '$ This file only writes the TABLED1 blocks; connect them to your deck using your preferred dynamic load cards.\n');
+    fprintf(fid, '$ Load-case/table mapping:\n');
+
+    next_tid = table_id_start;
+    for load_idx = 1:numel(load_case_names)
+        fprintf(fid, '$   %s : TABLED1 real=%d imag=%d\n', load_case_names{load_idx}, next_tid, next_tid + 1);
+        next_tid = next_tid + 2;
+    end
+    fprintf(fid, '$\n');
+
+    next_tid = table_id_start;
+    for load_idx = 1:numel(load_case_names)
+        fprintf(fid, '$ Load case: %s\n', load_case_names{load_idx});
+        fprintf(fid, 'TABLED1 %d\n', next_tid);
+        for k = 1:numel(freqs_export)
+            fprintf(fid, '        %.16g %.16g\n', freqs_export(k), real(F_export(k, load_idx)));
+        end
+        fprintf(fid, 'ENDT\n');
+
+        fprintf(fid, 'TABLED1 %d\n', next_tid + 1);
+        for k = 1:numel(freqs_export)
+            fprintf(fid, '        %.16g %.16g\n', freqs_export(k), imag(F_export(k, load_idx)));
+        end
+        fprintf(fid, 'ENDT\n');
+
+        next_tid = next_tid + 2;
+        if load_idx < numel(load_case_names)
+            fprintf(fid, '$\n');
+        end
+    end
+end
+
+
+function F_out = convert_force_from_si(F_in, force_unit)
+    switch force_unit
+        case 'n'
+            scale = 1.0;
+        case 'lbf'
+            scale = 1.0 / 4.4482216152605;
+        otherwise
+            error('Unsupported force unit "%s".', force_unit);
+    end
+
+    F_out = F_in * scale;
+end
+
+
 function out = logical_to_int(value)
     if value
         out = 1;
@@ -2099,5 +2196,23 @@ function value = validate_axis_scale_option(value, arg_name)
     value = lower(strtrim(value));
     if ~strcmp(value, 'log') && ~strcmp(value, 'linear')
         error('%s must be ''log'' or ''linear''.', arg_name);
+    end
+end
+
+
+function value = validate_force_unit_option(value, arg_name)
+    if isstring(value)
+        if ~isscalar(value)
+            error('%s must be a scalar string or character vector.', arg_name);
+        end
+        value = char(value);
+    end
+    if ~ischar(value)
+        error('%s must be ''N'' or ''lbf''.', arg_name);
+    end
+
+    value = lower(strtrim(value));
+    if ~strcmp(value, 'n') && ~strcmp(value, 'lbf')
+        error('%s must be ''N'' or ''lbf''.', arg_name);
     end
 end
