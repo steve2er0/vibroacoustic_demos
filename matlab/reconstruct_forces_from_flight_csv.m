@@ -2212,18 +2212,26 @@ function write_nastran_tabled1_block(fid, tid, x_values, y_values)
 
     n_pairs = numel(x_values);
     pair_idx = 1;
-    while pair_idx <= n_pairs
+    while pair_idx + 3 <= n_pairs
         line = repmat(' ', 1, 8);
-        n_pairs_this_line = min(3, n_pairs - pair_idx + 1);
-        for local_idx = 1:n_pairs_this_line
+        for local_idx = 1:4
             idx = pair_idx + local_idx - 1;
             line = [line, format_nastran_fixed8_real(x_values(idx)), format_nastran_fixed8_real(y_values(idx))]; %#ok<AGROW>
         end
-        if pair_idx + n_pairs_this_line - 1 == n_pairs
-            line = [line, sprintf('%8s', 'ENDT')]; %#ok<AGROW>
-        end
         fprintf(fid, '%s\n', line);
-        pair_idx = pair_idx + n_pairs_this_line;
+        pair_idx = pair_idx + 4;
+    end
+
+    if pair_idx <= n_pairs
+        line = repmat(' ', 1, 8);
+        while pair_idx <= n_pairs
+            line = [line, format_nastran_fixed8_real(x_values(pair_idx)), format_nastran_fixed8_real(y_values(pair_idx))]; %#ok<AGROW>
+            pair_idx = pair_idx + 1;
+        end
+        line = [line, sprintf('%8s', 'ENDT')]; %#ok<AGROW>
+        fprintf(fid, '%s\n', line);
+    else
+        fprintf(fid, '%8s%8s\n', ' ', 'ENDT');
     end
 end
 

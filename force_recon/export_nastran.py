@@ -151,12 +151,7 @@ def tabrnd1_snippet(
             fields.extend([_fmt_real_8(float(f)), _fmt_real_8(float(g))])
     if not fields:
         fields = [f"{'SKIP':>8s}", f"{'SKIP':>8s}"]
-    while fields:
-        chunk = fields[:6]
-        fields = fields[6:]
-        if not fields:
-            chunk.append(f"{'ENDT':>8s}")
-        lines.append(" " * 8 + "".join(chunk))
+    lines.extend(_packed_table_fields(fields))
     return "\n".join(lines)
 
 
@@ -184,12 +179,24 @@ def _tabled1_fixed_rows(tid: int, x: np.ndarray, y: np.ndarray) -> list[str]:
             fields.extend([_fmt_real_8(float(xi)), _fmt_real_8(float(yi))])
     if not fields:
         fields = [f"{'SKIP':>8s}", f"{'SKIP':>8s}"]
-    while fields:
-        chunk = fields[:6]
-        fields = fields[6:]
-        if not fields:
-            chunk.append(f"{'ENDT':>8s}")
+    lines.extend(_packed_table_fields(fields))
+    return lines
+
+
+def _packed_table_fields(fields: list[str]) -> list[str]:
+    lines: list[str] = []
+    remaining = list(fields)
+    while len(remaining) > 8:
+        chunk = remaining[:8]
+        remaining = remaining[8:]
         lines.append(" " * 8 + "".join(chunk))
+    if len(remaining) == 8:
+        lines.append(" " * 8 + "".join(remaining))
+        lines.append(f"{'':>8s}{'ENDT':>8s}")
+    elif remaining:
+        lines.append(" " * 8 + "".join(remaining) + f"{'ENDT':>8s}")
+    else:
+        lines.append(f"{'':>8s}{'ENDT':>8s}")
     return lines
 
 
