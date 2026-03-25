@@ -74,6 +74,12 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
 %       save_diagnostics_csv  optional output path for diagnostics CSV
 %       save_recovery_psd_csv optional output path for predicted recovery
 %                             acceleration PSD in g^2/Hz
+%       recovery_psd_spacing  'linear' or 'one_sixth_octave' for recovery
+%                             PSD CSV export, default = 'linear'
+%       recovery_psd_band_fmin_hz lower center frequency for octave-band
+%                             recovery export, default = 20
+%       recovery_psd_band_fmax_hz upper center frequency for octave-band
+%                             recovery export, default = 2000
 %       save_nastran_tabled1  optional output path for NASTRAN TABLED1 include
 %       save_nastran_replay_bdf optional output path for a SOL111 replay-deck skeleton
 %       nastran_force_unit    force units for NASTRAN export: 'N' or 'lbf',
@@ -466,7 +472,7 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
         end
         stage_timer = tic;
         log_progress(progress_enabled, 'Writing recovery PSD CSV: %s\n', opts.save_recovery_psd_csv);
-        write_recovery_psd_csv(result.recovery, opts.save_recovery_psd_csv);
+        write_recovery_psd_csv(result.recovery, opts.save_recovery_psd_csv, opts);
         log_progress(progress_enabled, 'Wrote recovery PSD CSV in %s.\n', format_duration(toc(stage_timer)));
     end
     if ~isempty(opts.save_nastran_tabled1)
@@ -549,6 +555,9 @@ function opts = resolve_options(opts, time_s)
     defaults.save_force_csv = '';
     defaults.save_diagnostics_csv = '';
     defaults.save_recovery_psd_csv = '';
+    defaults.recovery_psd_spacing = 'linear';
+    defaults.recovery_psd_band_fmin_hz = 20.0;
+    defaults.recovery_psd_band_fmax_hz = 2000.0;
     defaults.save_nastran_tabled1 = '';
     defaults.save_nastran_replay_bdf = '';
     defaults.nastran_force_unit = 'N';
@@ -589,6 +598,7 @@ function opts = resolve_options(opts, time_s)
     opts.load_case_names = normalize_optional_name_list(opts.load_case_names, 'opts.load_case_names');
     opts.recovery_mobility_paths = normalize_optional_path_list(opts.recovery_mobility_paths, 'opts.recovery_mobility_paths');
     opts.recovery_channel_names = normalize_optional_name_list(opts.recovery_channel_names, 'opts.recovery_channel_names');
+    opts.recovery_psd_spacing = validate_recovery_psd_spacing_option(opts.recovery_psd_spacing, 'opts.recovery_psd_spacing');
     opts.nastran_force_unit = validate_force_unit_option(opts.nastran_force_unit, 'opts.nastran_force_unit');
 
     if ~isempty(opts.highpass_hz)
@@ -625,6 +635,17 @@ function opts = resolve_options(opts, time_s)
     end
     if opts.plot_psd_fmax_hz < opts.plot_psd_fmin_hz
         error('opts.plot_psd_fmax_hz must be >= opts.plot_psd_fmin_hz.');
+    end
+    if ~isscalar(opts.recovery_psd_band_fmin_hz) || ~isnumeric(opts.recovery_psd_band_fmin_hz) || ...
+            ~isfinite(opts.recovery_psd_band_fmin_hz) || opts.recovery_psd_band_fmin_hz <= 0
+        error('opts.recovery_psd_band_fmin_hz must be a positive finite scalar.');
+    end
+    if ~isscalar(opts.recovery_psd_band_fmax_hz) || ~isnumeric(opts.recovery_psd_band_fmax_hz) || ...
+            ~isfinite(opts.recovery_psd_band_fmax_hz) || opts.recovery_psd_band_fmax_hz <= 0
+        error('opts.recovery_psd_band_fmax_hz must be a positive finite scalar.');
+    end
+    if opts.recovery_psd_band_fmax_hz < opts.recovery_psd_band_fmin_hz
+        error('opts.recovery_psd_band_fmax_hz must be >= opts.recovery_psd_band_fmin_hz.');
     end
     if strcmp(opts.plot_psd_xscale, 'log') && opts.plot_psd_fmin_hz <= 0
         error('opts.plot_psd_fmin_hz must be > 0 when opts.plot_psd_xscale is "log".');
@@ -866,6 +887,8 @@ function recovery = evaluate_recovery_outputs( ...
     acc_pred_sel_g = acc_pred_sel_si / g0;
     [nperseg, noverlap] = resolve_psd_welch_options(n_time, opts);
     [psd_freqs_hz, psd_g2_per_hz] = welch_psd_matrix(acc_pred_sel_g, fs_hz, nperseg, noverlap, fft_window);
+    [band_center_freqs_hz, band_edges_hz, band_psd_g2_per_hz] = fractional_octave_psd_matrix( ...
+        psd_freqs_hz, psd_g2_per_hz, 6, opts.recovery_psd_band_fmin_hz, opts.recovery_psd_band_fmax_hz);
 
     recovery = struct();
     recovery.mobility_paths = recovery_paths;
@@ -881,6 +904,10 @@ function recovery = evaluate_recovery_outputs( ...
     recovery.psd_freqs_hz = psd_freqs_hz;
     recovery.psd_g2_per_hz = psd_g2_per_hz;
     recovery.psd_units = 'g^2/Hz';
+    recovery.band_center_freqs_hz = band_center_freqs_hz;
+    recovery.band_edges_hz = band_edges_hz;
+    recovery.band_psd_g2_per_hz = band_psd_g2_per_hz;
+    recovery.band_fraction = 6;
     recovery.solve_grid_source = solve_grid_source;
 end
 
@@ -2292,6 +2319,61 @@ function [freqs_hz, pxx_matrix] = welch_psd_matrix(x, fs_hz, nperseg, noverlap, 
 end
 
 
+function [center_freqs_hz, band_edges_hz, band_psd_matrix] = fractional_octave_psd_matrix( ...
+        freqs_hz, pxx_matrix, fraction, center_fmin_hz, center_fmax_hz)
+    center_freqs_hz = fractional_octave_centers(center_fmin_hz, center_fmax_hz, fraction);
+    half_band_ratio = 2.0 ^ (1.0 / (2.0 * fraction));
+    band_edges_hz = [center_freqs_hz / half_band_ratio, center_freqs_hz * half_band_ratio];
+
+    n_bands = numel(center_freqs_hz);
+    n_channels = size(pxx_matrix, 2);
+    band_psd_matrix = NaN(n_bands, n_channels);
+    for band_idx = 1:n_bands
+        f_low_hz = band_edges_hz(band_idx, 1);
+        f_high_hz = band_edges_hz(band_idx, 2);
+        for channel_idx = 1:n_channels
+            band_psd_matrix(band_idx, channel_idx) = band_average_psd( ...
+                freqs_hz, pxx_matrix(:, channel_idx), f_low_hz, f_high_hz);
+        end
+    end
+end
+
+
+function centers_hz = fractional_octave_centers(center_fmin_hz, center_fmax_hz, fraction)
+    validate_positive_integer_option(fraction, 'fraction');
+    ratio = 2.0 ^ (1.0 / fraction);
+    centers_hz = center_fmin_hz;
+    while centers_hz(end) * ratio <= center_fmax_hz * (1.0 + 1e-12)
+        centers_hz(end + 1, 1) = centers_hz(end) * ratio; %#ok<AGROW>
+    end
+    centers_hz = centers_hz(:);
+end
+
+
+function value = band_average_psd(freqs_hz, pxx, f_low_hz, f_high_hz)
+    value = NaN;
+    mask = isfinite(freqs_hz) & isfinite(pxx);
+    freqs_hz = freqs_hz(mask);
+    pxx = pxx(mask);
+    if numel(freqs_hz) < 2
+        return;
+    end
+    if f_low_hz < freqs_hz(1) || f_high_hz > freqs_hz(end) || f_high_hz <= f_low_hz
+        return;
+    end
+
+    interior_mask = freqs_hz > f_low_hz & freqs_hz < f_high_hz;
+    sample_freqs_hz = [f_low_hz; freqs_hz(interior_mask); f_high_hz];
+    sample_pxx = interp1(freqs_hz, pxx, sample_freqs_hz, 'linear');
+    if any(~isfinite(sample_pxx))
+        return;
+    end
+
+    band_power = trapz(sample_freqs_hz, sample_pxx);
+    value = band_power / (f_high_hz - f_low_hz);
+end
+
+
 function x = irfft_matrix(one_sided_spectrum, n_time)
     if isvector(one_sided_spectrum)
         one_sided_spectrum = one_sided_spectrum(:);
@@ -2381,24 +2463,45 @@ function write_reconstruction_diagnostics_csv(result, path_out)
 end
 
 
-function write_recovery_psd_csv(recovery, path_out)
+function write_recovery_psd_csv(recovery, path_out, opts)
     fid = fopen(path_out, 'w');
     if fid < 0
         error('Could not open %s for writing.', path_out);
     end
     cleanup = onCleanup(@() fclose(fid));
 
-    header_parts = {'freq_hz'};
+    if strcmp(opts.recovery_psd_spacing, 'linear')
+        header_parts = {'freq_hz'};
+        for channel_idx = 1:numel(recovery.channel_names)
+            token = sanitize_csv_token(recovery.channel_names{channel_idx});
+            header_parts{end + 1} = sprintf('%s_g2_per_hz', token); %#ok<AGROW>
+        end
+        fprintf(fid, '%s\n', strjoin(header_parts, ','));
+
+        for k = 1:numel(recovery.psd_freqs_hz)
+            fprintf(fid, '%.16g', recovery.psd_freqs_hz(k));
+            for channel_idx = 1:size(recovery.psd_g2_per_hz, 2)
+                fprintf(fid, ',%.16g', recovery.psd_g2_per_hz(k, channel_idx));
+            end
+            fprintf(fid, '\n');
+        end
+        return;
+    end
+
+    header_parts = {'center_freq_hz', 'f_low_hz', 'f_high_hz'};
     for channel_idx = 1:numel(recovery.channel_names)
         token = sanitize_csv_token(recovery.channel_names{channel_idx});
         header_parts{end + 1} = sprintf('%s_g2_per_hz', token); %#ok<AGROW>
     end
     fprintf(fid, '%s\n', strjoin(header_parts, ','));
 
-    for k = 1:numel(recovery.psd_freqs_hz)
-        fprintf(fid, '%.16g', recovery.psd_freqs_hz(k));
-        for channel_idx = 1:size(recovery.psd_g2_per_hz, 2)
-            fprintf(fid, ',%.16g', recovery.psd_g2_per_hz(k, channel_idx));
+    for k = 1:numel(recovery.band_center_freqs_hz)
+        fprintf(fid, '%.16g,%.16g,%.16g', ...
+            recovery.band_center_freqs_hz(k), ...
+            recovery.band_edges_hz(k, 1), ...
+            recovery.band_edges_hz(k, 2));
+        for channel_idx = 1:size(recovery.band_psd_g2_per_hz, 2)
+            fprintf(fid, ',%.16g', recovery.band_psd_g2_per_hz(k, channel_idx));
         end
         fprintf(fid, '\n');
     end
@@ -2687,6 +2790,29 @@ function value = validate_axis_scale_option(value, arg_name)
     value = lower(strtrim(value));
     if ~strcmp(value, 'log') && ~strcmp(value, 'linear')
         error('%s must be ''log'' or ''linear''.', arg_name);
+    end
+end
+
+
+function value = validate_recovery_psd_spacing_option(value, arg_name)
+    if isstring(value)
+        if ~isscalar(value)
+            error('%s must be a scalar string or character vector.', arg_name);
+        end
+        value = char(value);
+    end
+    if ~ischar(value)
+        error('%s must be ''linear'' or ''one_sixth_octave''.', arg_name);
+    end
+
+    value = lower(strtrim(value));
+    switch value
+        case 'linear'
+            return;
+        case {'one_sixth_octave', '1/6_octave', '1/6 octave'}
+            value = 'one_sixth_octave';
+        otherwise
+            error('%s must be ''linear'' or ''one_sixth_octave''.', arg_name);
     end
 end
 

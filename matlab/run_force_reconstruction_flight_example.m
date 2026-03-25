@@ -97,6 +97,9 @@ opts.progress_interval_sec = 2.0;
 % };
 % opts.save_recovery_psd_csv = fullfile(repoRoot, 'recovery_predicted_psd_matlab.csv');
 % opts.recovery_channel_names = {'grid123_t3' 'grid456_t3'};
+% opts.recovery_psd_spacing = 'one_sixth_octave';
+% opts.recovery_psd_band_fmin_hz = 20.0;
+% opts.recovery_psd_band_fmax_hz = 2000.0;
 %
 % Uncomment these to write a NASTRAN TABLED1 include file in model units.
 % For an lbf-in model, set nastran_force_unit = 'lbf' and keep all
