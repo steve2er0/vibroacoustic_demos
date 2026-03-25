@@ -431,7 +431,7 @@ python3 examples/generate_synthetic_csv.py   # creates examples/synthetic_data/ 
 python3 -m pytest tests/ -q
 ```
 
-(All tests should pass; **13 passed** including the simply-supported plate reconstruction case, Python MAT-flight import coverage, and the dummy-`H=ones()` helper.)
+(All tests should pass; **21 passed** including the simply-supported plate reconstruction case, MAT-flight import coverage, NASTRAN export formatting checks, and pseudo PSD/CPSD response utilities.)
 
 ### Library usage
 
@@ -456,3 +456,55 @@ res = pipeline.reconstruct_forces(
 ```
 
 Exports: `force_recon.export_nastran.write_force_spectrum_csv`, `tabrnd1_snippet`, `tabled1_re_im_snippets`.
+
+### Pseudo PSD / CPSD from replayed complex response
+
+If you replay the reconstructed loads in deterministic `SOL111` and export complex response
+as CSV in the same style
+
+- `freq_hz,re0,im0,re1,im1,...`
+
+you can build a pseudo auto-PSD and cross-PSD estimate with:
+
+```bash
+python3 compute_psd_from_complex_response.py replay_response.csv
+```
+
+This writes:
+
+- `<input>_auto_psd.csv`
+- `<input>_cpsd.csv`
+
+By default the script assumes the complex harmonic response is a **peak-amplitude** phasor,
+which is the usual interpretation for deterministic `SOL111` output. In that case the
+one-sided pseudo spectral matrix is
+
+\[
+S_{xx}(f_k) \approx \frac{X(f_k) X(f_k)^H}{2 \Delta f}
+\]
+
+If your complex response is already in RMS form, use:
+
+```bash
+python3 compute_psd_from_complex_response.py replay_response.csv --phasor-convention rms
+```
+
+The output units are the square of the input response units per Hz. For example:
+
+- input in `g` -> output in `g^2/Hz`
+- input in `in/s^2` -> output in `(in/s^2)^2/Hz`
+
+MATLAB has the same workflow:
+
+```matlab
+opts = struct();
+opts.phasor_convention = 'peak';   % usual SOL111 interpretation
+result = compute_psd_from_complex_response_csv('replay_response.csv', opts);
+```
+
+By default MATLAB writes:
+
+- `replay_response_auto_psd.csv`
+- `replay_response_cpsd.csv`
+
+Set `opts.save_auto_psd_csv = ''` or `opts.save_cpsd_csv = ''` to skip either output.
