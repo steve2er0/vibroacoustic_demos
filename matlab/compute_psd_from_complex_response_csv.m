@@ -20,6 +20,13 @@ function result = compute_psd_from_complex_response_csv(pathResponseCsv, opts)
 %   phasor_convention
 %       'peak' or 'rms'. Default = 'peak'. Use 'peak' for the usual SOL111
 %       real/imaginary harmonic-response phasor interpretation.
+%   input_accel_unit
+%       Input acceleration unit: 'native', 'g', 'm/s^2', or 'in/s^2'.
+%       Default = 'native' (no assumed conversion).
+%   output_accel_unit
+%       Output acceleration unit: 'native', 'g', 'm/s^2', or 'in/s^2'.
+%       Default = 'native'. If either input or output is 'native', both must
+%       be 'native'.
 %   save_auto_psd_csv
 %       Output CSV path for auto PSD channels. Default =
 %       <input>_auto_psd.csv. Set to '' to skip writing.
@@ -33,13 +40,21 @@ function result = compute_psd_from_complex_response_csv(pathResponseCsv, opts)
 %   freqs_hz
 %       Frequency vector [Hz]
 %   response_complex
-%       Complex response matrix, shape (n_freq, n_ch)
+%       Complex response matrix in output_accel_unit, shape (n_freq, n_ch)
+%   response_complex_input
+%       Raw complex response matrix exactly as loaded from the CSV
 %   channel_names
 %       Parsed channel labels
 %   df_hz
 %       Frequency spacing [Hz]
 %   phasor_convention
 %       Resolved convention string
+%   input_accel_unit
+%       Resolved input acceleration unit
+%   output_accel_unit
+%       Resolved output acceleration unit
+%   response_scale
+%       Scalar applied to the complex response before PSD/CPSD formation
 %   auto_psd
 %       Auto PSD matrix, shape (n_freq, n_ch)
 %   cpsd
@@ -66,12 +81,15 @@ function result = compute_psd_from_complex_response_csv(pathResponseCsv, opts)
 
     opts = resolve_options(opts, pathResponseCsv);
 
-    [freqs_hz, response_complex, channel_names] = load_complex_response_csv(pathResponseCsv);
+    [freqs_hz, response_complex_input, channel_names] = load_complex_response_csv(pathResponseCsv);
     if isempty(opts.df_hz)
         df_hz = infer_uniform_df_hz(freqs_hz);
     else
         df_hz = opts.df_hz;
     end
+
+    response_scale = accel_unit_scale(opts.input_accel_unit, opts.output_accel_unit);
+    response_complex = response_complex_input * response_scale;
 
     switch opts.phasor_convention
         case 'peak'
@@ -95,10 +113,14 @@ function result = compute_psd_from_complex_response_csv(pathResponseCsv, opts)
 
     result = struct();
     result.freqs_hz = freqs_hz;
+    result.response_complex_input = response_complex_input;
     result.response_complex = response_complex;
     result.channel_names = channel_names;
     result.df_hz = df_hz;
     result.phasor_convention = opts.phasor_convention;
+    result.input_accel_unit = opts.input_accel_unit;
+    result.output_accel_unit = opts.output_accel_unit;
+    result.response_scale = response_scale;
     result.auto_psd = auto_psd;
     result.cpsd = cpsd;
 
@@ -121,6 +143,9 @@ function result = compute_psd_from_complex_response_csv(pathResponseCsv, opts)
         fprintf('Frequency lines           : %d\n', n_freq);
         fprintf('df_hz                     : %.16g\n', df_hz);
         fprintf('Phasor convention         : %s\n', opts.phasor_convention);
+        fprintf('Input accel unit          : %s\n', opts.input_accel_unit);
+        fprintf('Output accel unit         : %s\n', opts.output_accel_unit);
+        fprintf('Response scale            : %.16g\n', response_scale);
         if ~isempty(result.save_auto_psd_csv)
             fprintf('Auto PSD CSV              : %s\n', result.save_auto_psd_csv);
         end
@@ -145,6 +170,12 @@ function opts = resolve_options(opts, pathResponseCsv)
     if ~isfield(opts, 'phasor_convention') || isempty(opts.phasor_convention)
         opts.phasor_convention = 'peak';
     end
+    if ~isfield(opts, 'input_accel_unit') || isempty(opts.input_accel_unit)
+        opts.input_accel_unit = 'native';
+    end
+    if ~isfield(opts, 'output_accel_unit') || isempty(opts.output_accel_unit)
+        opts.output_accel_unit = 'native';
+    end
     if ~isfield(opts, 'save_auto_psd_csv')
         opts.save_auto_psd_csv = default_auto;
     end
@@ -156,6 +187,8 @@ function opts = resolve_options(opts, pathResponseCsv)
     end
 
     opts.phasor_convention = validate_phasor_convention(opts.phasor_convention);
+    opts.input_accel_unit = validate_accel_unit(opts.input_accel_unit, 'opts.input_accel_unit');
+    opts.output_accel_unit = validate_accel_unit(opts.output_accel_unit, 'opts.output_accel_unit');
     opts.verbose = logical(opts.verbose);
 
     if ~isempty(opts.df_hz)
@@ -166,6 +199,56 @@ function opts = resolve_options(opts, pathResponseCsv)
 
     opts.save_auto_psd_csv = normalize_optional_path(opts.save_auto_psd_csv, 'opts.save_auto_psd_csv');
     opts.save_cpsd_csv = normalize_optional_path(opts.save_cpsd_csv, 'opts.save_cpsd_csv');
+end
+
+
+function scale = accel_unit_scale(input_unit, output_unit)
+    if strcmp(input_unit, 'native') || strcmp(output_unit, 'native')
+        if strcmp(input_unit, output_unit)
+            scale = 1.0;
+            return;
+        end
+        error(['When using acceleration-unit conversion, set both opts.input_accel_unit ' ...
+            'and opts.output_accel_unit explicitly.']);
+    end
+
+    scale = accel_unit_to_mps2(input_unit) / accel_unit_to_mps2(output_unit);
+end
+
+
+function value = validate_accel_unit(value, arg_name)
+    if isstring(value)
+        if ~isscalar(value)
+            error('%s must be a scalar string or character vector.', arg_name);
+        end
+        value = char(value);
+    end
+    if ~ischar(value)
+        error('%s must be ''native'', ''g'', ''m/s^2'', or ''in/s^2''.', arg_name);
+    end
+
+    value = lower(strtrim(value));
+    aliases = containers.Map( ...
+        {'native', 'g', 'm/s^2', 'm/s2', 'mps2', 'in/s^2', 'in/s2', 'ips2'}, ...
+        {'native', 'g', 'm/s^2', 'm/s^2', 'm/s^2', 'in/s^2', 'in/s^2', 'in/s^2'});
+    if ~isKey(aliases, value)
+        error('%s must be ''native'', ''g'', ''m/s^2'', or ''in/s^2''.', arg_name);
+    end
+    value = aliases(value);
+end
+
+
+function scale = accel_unit_to_mps2(unit_name)
+    switch unit_name
+        case 'g'
+            scale = 9.80665;
+        case 'm/s^2'
+            scale = 1.0;
+        case 'in/s^2'
+            scale = 0.0254;
+        otherwise
+            error('Unsupported acceleration unit "%s".', unit_name);
+    end
 end
 
 

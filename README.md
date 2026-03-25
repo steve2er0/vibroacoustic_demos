@@ -499,6 +499,8 @@ MATLAB has the same workflow:
 ```matlab
 opts = struct();
 opts.phasor_convention = 'peak';   % usual SOL111 interpretation
+opts.input_accel_unit = 'in/s^2';  % lbf-in-s Nastran replay acceleration
+opts.output_accel_unit = 'g';      % writes PSD/CPSD in g^2/Hz
 result = compute_psd_from_complex_response_csv('replay_response.csv', opts);
 ```
 
@@ -508,3 +510,5 @@ By default MATLAB writes:
 - `replay_response_cpsd.csv`
 
 Set `opts.save_auto_psd_csv = ''` or `opts.save_cpsd_csv = ''` to skip either output.
+If you leave `input_accel_unit` and `output_accel_unit` at their default `'native'`
+values, no unit conversion is applied.
