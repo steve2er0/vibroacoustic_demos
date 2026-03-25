@@ -45,6 +45,13 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
 %                             in the original flight/FRF channel order,
 %                             default = all channels
 %       load_case_names       optional names for plots / CSV export, default = file basenames
+%       recovery_mobility_paths optional ordered list of recovery-only mobility
+%                             CSVs for uninstrumented response locations. The
+%                             file order must match the reconstructed load-case
+%                             order and count.
+%       recovery_channel_names optional names for the recovery response channels.
+%                             Default = parsed from the first recovery CSV
+%                             header when available, otherwise rec0, rec1, ...
 %       solve_on_frf_grid     solve only at the FRF frequency lines, default = false
 %       fft_window            'hann' or 'boxcar', default = 'hann'
 %       plot_results          plot reconstructed forces + diagnostics, default = false
@@ -65,6 +72,8 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
 %       progress_interval_sec progress update period during solve loop, default = 2.0
 %       save_force_csv        optional output path for F_hat CSV
 %       save_diagnostics_csv  optional output path for diagnostics CSV
+%       save_recovery_psd_csv optional output path for predicted recovery
+%                             acceleration PSD in g^2/Hz
 %       save_nastran_tabled1  optional output path for NASTRAN TABLED1 include
 %       save_nastran_replay_bdf optional output path for a SOL111 replay-deck skeleton
 %       nastran_force_unit    force units for NASTRAN export: 'N' or 'lbf',
@@ -100,7 +109,8 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
 %       relative_residual, valid_mask, fs_hz, t_start, t_end,
 %       selected measured/predicted accelerations, preprocessing info,
 %       optional NASTRAN-export force spectrum in opts.nastran_force_unit,
-%       and optional lambda-sweep diagnostics
+%       optional recovery response predictions, and optional lambda-sweep
+%       diagnostics
 %   inputs
 %       Loaded source data and resolved options. When plot_results=true,
 %       MATLAB also compares the measured and reconstructed acceleration
@@ -155,6 +165,9 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
 
     opts = resolve_options(opts, time_s);
     progress_enabled = opts.show_progress;
+    if ~isempty(opts.recovery_mobility_paths)
+        assert_path_list_exists(opts.recovery_mobility_paths, 'opts.recovery_mobility_paths');
+    end
     if ~isempty(opts.f_min_hz) && ~isempty(opts.f_max_hz) && opts.f_max_hz < opts.f_min_hz
         error('opts.f_max_hz must be >= opts.f_min_hz.');
     end
@@ -354,6 +367,21 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
         end
     end
 
+    recovery = struct();
+    if ~isempty(opts.recovery_mobility_paths)
+        stage_timer = tic;
+        log_progress(progress_enabled, 'Evaluating recovery-only response locations...\n');
+        recovery = evaluate_recovery_outputs( ...
+            opts.recovery_mobility_paths, opts.recovery_channel_names, ...
+            opts.mobility_is_si, opts.g0, opts.fft_window, opts, ...
+            freqs_hz, F_hat, valid_mask, flight_fft_freqs_hz, ...
+            numel(time_sel), fs_hz, solve_grid_source);
+        timing.recovery_sec = toc(stage_timer);
+        log_progress(progress_enabled, ...
+            'Computed recovery outputs for %d channel(s) in %s.\n', ...
+            numel(recovery.channel_names), format_duration(timing.recovery_sec));
+    end
+
     result = struct();
     result.freqs_hz = freqs_hz;
     result.F_hat = F_hat;
@@ -387,6 +415,7 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
     result.load_case_names = load_case_names;
     result.preprocessing = preprocessing;
     result.lambda_sweep = lambda_sweep;
+    result.recovery = recovery;
     result.F_hat_nastran = convert_force_from_si(result.F_hat, opts.nastran_force_unit);
     result.nastran_force_unit = upper(opts.nastran_force_unit);
     timing.reconstruction_sec = toc(overall_timer);
@@ -394,6 +423,7 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
 
     inputs = struct();
     inputs.mobility_paths = mobility_paths;
+    inputs.recovery_mobility_paths = opts.recovery_mobility_paths;
     inputs.load_case_names = load_case_names;
     if is_legacy_triplet
         inputs.path_fx = mobility_paths{1};
@@ -428,6 +458,16 @@ function [result, inputs] = reconstruct_forces_from_flight_csv(varargin)
         log_progress(progress_enabled, 'Writing diagnostics CSV: %s\n', opts.save_diagnostics_csv);
         write_reconstruction_diagnostics_csv(result, opts.save_diagnostics_csv);
         log_progress(progress_enabled, 'Wrote diagnostics CSV in %s.\n', format_duration(toc(stage_timer)));
+    end
+    if ~isempty(opts.save_recovery_psd_csv)
+        if isempty(fieldnames(result.recovery))
+            error(['opts.save_recovery_psd_csv was set, but no recovery outputs were computed. ' ...
+                'Provide opts.recovery_mobility_paths.']);
+        end
+        stage_timer = tic;
+        log_progress(progress_enabled, 'Writing recovery PSD CSV: %s\n', opts.save_recovery_psd_csv);
+        write_recovery_psd_csv(result.recovery, opts.save_recovery_psd_csv);
+        log_progress(progress_enabled, 'Wrote recovery PSD CSV in %s.\n', format_duration(toc(stage_timer)));
     end
     if ~isempty(opts.save_nastran_tabled1)
         stage_timer = tic;
@@ -486,6 +526,8 @@ function opts = resolve_options(opts, time_s)
     defaults.f_max_hz = [];
     defaults.active_channel_idx = [];
     defaults.load_case_names = {};
+    defaults.recovery_mobility_paths = {};
+    defaults.recovery_channel_names = {};
     defaults.solve_on_frf_grid = false;
     defaults.fft_window = 'hann';
     defaults.plot_results = false;
@@ -506,6 +548,7 @@ function opts = resolve_options(opts, time_s)
     defaults.progress_interval_sec = 2.0;
     defaults.save_force_csv = '';
     defaults.save_diagnostics_csv = '';
+    defaults.save_recovery_psd_csv = '';
     defaults.save_nastran_tabled1 = '';
     defaults.save_nastran_replay_bdf = '';
     defaults.nastran_force_unit = 'N';
@@ -544,6 +587,8 @@ function opts = resolve_options(opts, time_s)
     opts.plot_psd_xscale = validate_axis_scale_option(opts.plot_psd_xscale, 'opts.plot_psd_xscale');
     opts.plot_psd_yscale = validate_axis_scale_option(opts.plot_psd_yscale, 'opts.plot_psd_yscale');
     opts.load_case_names = normalize_optional_name_list(opts.load_case_names, 'opts.load_case_names');
+    opts.recovery_mobility_paths = normalize_optional_path_list(opts.recovery_mobility_paths, 'opts.recovery_mobility_paths');
+    opts.recovery_channel_names = normalize_optional_name_list(opts.recovery_channel_names, 'opts.recovery_channel_names');
     opts.nastran_force_unit = validate_force_unit_option(opts.nastran_force_unit, 'opts.nastran_force_unit');
 
     if ~isempty(opts.highpass_hz)
@@ -776,6 +821,70 @@ function [solve_freqs_hz, a_meas_solve_fft, A_solve, solve_grid_source] = prepar
 end
 
 
+function recovery = evaluate_recovery_outputs( ...
+        recovery_paths, recovery_channel_names_opt, mobility_is_si, g0, fft_window, opts, ...
+        solve_freqs_hz, F_hat, valid_mask, flight_fft_freqs_hz, n_time, fs_hz, solve_grid_source)
+    [recovery_freqs_hz, H_recovery] = load_mobility_csv_stack(recovery_paths);
+    n_loads = size(F_hat, 2);
+    if size(H_recovery, 3) ~= n_loads
+        error(['Recovery mobility stack has %d load cases, but the reconstruction solved %d load cases. ' ...
+            'The recovery file order/count must match the solve mobility files.'], ...
+            size(H_recovery, 3), n_loads);
+    end
+
+    if ~mobility_is_si
+        H_recovery = mobility_imp_to_si(H_recovery);
+    end
+
+    A_recovery_frf = accelerance_from_mobility(H_recovery, 2.0 * pi * recovery_freqs_hz);
+    A_recovery_solve = interp_complex_frequency(solve_freqs_hz, recovery_freqs_hz, A_recovery_frf, complex(NaN, NaN));
+    n_freq = numel(solve_freqs_hz);
+    n_recovery = size(A_recovery_solve, 2);
+    channel_names = resolve_recovery_channel_names( ...
+        recovery_channel_names_opt, recovery_paths{1}, n_recovery);
+
+    a_pred_fft = complex(zeros(n_freq, n_recovery));
+    recovery_valid_mask = false(n_freq, 1);
+    solve_indices = find(valid_mask(:));
+    for solve_idx = 1:numel(solve_indices)
+        k = solve_indices(solve_idx);
+        Ak = reshape(A_recovery_solve(k, :, :), n_recovery, n_loads);
+        if any(~isfinite(Ak(:))) || any(~isfinite(F_hat(k, :)))
+            continue;
+        end
+        a_pred_fft(k, :) = (Ak * F_hat(k, :).').';
+        recovery_valid_mask(k) = true;
+    end
+
+    if strcmp(solve_grid_source, 'frf')
+        a_pred_fft_flight = interp_complex_frequency(flight_fft_freqs_hz, solve_freqs_hz, a_pred_fft, complex(0.0, 0.0));
+    else
+        a_pred_fft_flight = a_pred_fft;
+    end
+
+    acc_pred_sel_si = real(irfft_matrix(a_pred_fft_flight, n_time));
+    acc_pred_sel_g = acc_pred_sel_si / g0;
+    [nperseg, noverlap] = resolve_psd_welch_options(n_time, opts);
+    [psd_freqs_hz, psd_g2_per_hz] = welch_psd_matrix(acc_pred_sel_g, fs_hz, nperseg, noverlap, fft_window);
+
+    recovery = struct();
+    recovery.mobility_paths = recovery_paths;
+    recovery.channel_names = channel_names;
+    recovery.source_freqs_hz = recovery_freqs_hz;
+    recovery.freqs_hz = solve_freqs_hz;
+    recovery.valid_mask = recovery_valid_mask;
+    recovery.a_pred_fft = a_pred_fft;
+    recovery.flight_fft_freqs_hz = flight_fft_freqs_hz;
+    recovery.a_pred_fft_flight = a_pred_fft_flight;
+    recovery.acc_pred_sel_si = acc_pred_sel_si;
+    recovery.acc_pred_sel_g = acc_pred_sel_g;
+    recovery.psd_freqs_hz = psd_freqs_hz;
+    recovery.psd_g2_per_hz = psd_g2_per_hz;
+    recovery.psd_units = 'g^2/Hz';
+    recovery.solve_grid_source = solve_grid_source;
+end
+
+
 function lambda_sweep = evaluate_lambda_sweep(A_fft, a_meas_fft, freqs_hz, solve_indices, n_sensors, opts, progress_enabled)
     lambda_sweep = struct();
     lambda_sweep.lambda_values = opts.lambda_sweep_values(:);
@@ -880,6 +989,9 @@ end
 
 
 function paths = normalize_path_list(value, argName)
+    if ischar(value) || (isstring(value) && isscalar(value))
+        value = {char(value)};
+    end
     if isstring(value)
         value = cellstr(value(:));
     end
@@ -891,6 +1003,15 @@ function paths = normalize_path_list(value, argName)
     for idx = 1:numel(value)
         paths{idx} = normalize_scalar_path(value{idx}, sprintf('%s{%d}', argName, idx));
     end
+end
+
+
+function paths = normalize_optional_path_list(value, argName)
+    if isempty(value)
+        paths = {};
+        return;
+    end
+    paths = normalize_path_list(value, argName);
 end
 
 
@@ -1046,6 +1167,83 @@ function names = normalize_optional_name_list(value, argName)
         end
         names{idx} = strtrim(name);
     end
+end
+
+
+function names = resolve_recovery_channel_names(provided_names, reference_csv_path, n_channels)
+    if ~isempty(provided_names)
+        if numel(provided_names) ~= n_channels
+            error('opts.recovery_channel_names must have exactly %d entries.', n_channels);
+        end
+        names = provided_names(:).';
+        return;
+    end
+
+    names = derive_complex_pair_names_from_csv_header(reference_csv_path, n_channels);
+    if isempty(names)
+        names = arrayfun(@(idx) sprintf('rec%d', idx - 1), 1:n_channels, 'UniformOutput', false);
+    end
+end
+
+
+function names = derive_complex_pair_names_from_csv_header(pathValue, n_channels)
+    names = {};
+    header = read_header_fields(pathValue);
+    if numel(header) ~= (1 + 2 * n_channels)
+        return;
+    end
+
+    names = cell(1, n_channels);
+    for idx = 1:n_channels
+        re_token = header{2 * idx};
+        im_token = header{2 * idx + 1};
+        base_name = infer_complex_pair_name(re_token, im_token, idx);
+        if isempty(base_name)
+            names = {};
+            return;
+        end
+        names{idx} = base_name;
+    end
+end
+
+
+function name = infer_complex_pair_name(re_token, im_token, idx)
+    name = '';
+    re_base = strip_complex_component_suffix(re_token);
+    im_base = strip_complex_component_suffix(im_token);
+    if ~isempty(re_base) && strcmp(re_base, im_base)
+        name = re_base;
+        return;
+    end
+
+    re_match = regexp(strtrim(lower(re_token)), '^re(\d+)$', 'tokens', 'once');
+    im_match = regexp(strtrim(lower(im_token)), '^im(\d+)$', 'tokens', 'once');
+    if ~isempty(re_match) && ~isempty(im_match) && strcmp(re_match{1}, im_match{1})
+        name = sprintf('rec%s', re_match{1});
+        return;
+    end
+
+    if strcmp(strtrim(lower(re_token)), sprintf('re%d', idx - 1)) && ...
+            strcmp(strtrim(lower(im_token)), sprintf('im%d', idx - 1))
+        name = sprintf('rec%d', idx - 1);
+    end
+end
+
+
+function base = strip_complex_component_suffix(token)
+    token = strtrim(char(token));
+    lower_token = lower(token);
+    suffixes = {'_re', '_im', '.re', '.im', '-re', '-im', ' re', ' im'};
+    for idx = 1:numel(suffixes)
+        suffix = suffixes{idx};
+        if endsWith(lower_token, suffix)
+            base = strtrim(token(1:end-numel(suffix)));
+            if ~isempty(base)
+                return;
+            end
+        end
+    end
+    base = '';
 end
 
 
@@ -1487,6 +1685,9 @@ function print_summary(result)
     end
     if isfield(result, 'load_case_names')
         fprintf('Load cases                  : %d\n', numel(result.load_case_names));
+    end
+    if isfield(result, 'recovery') && ~isempty(result.recovery) && isfield(result.recovery, 'channel_names')
+        fprintf('Recovery output channels    : %d\n', numel(result.recovery.channel_names));
     end
     if isfield(result, 'preprocessing') && result.preprocessing.highpass_enabled
         fprintf('High-pass filter            : %d-pole %.3f Hz (%s)\n', ...
@@ -2070,6 +2271,27 @@ function [freqs_hz, pxx] = welch_psd_1d(x, fs_hz, nperseg, noverlap, window_name
 end
 
 
+function [freqs_hz, pxx_matrix] = welch_psd_matrix(x, fs_hz, nperseg, noverlap, window_name)
+    if isvector(x)
+        x = x(:);
+    end
+
+    n_channels = size(x, 2);
+    freqs_hz = [];
+    pxx_matrix = [];
+    for channel_idx = 1:n_channels
+        [freq_this, pxx_this] = welch_psd_1d(x(:, channel_idx), fs_hz, nperseg, noverlap, window_name);
+        if isempty(freqs_hz)
+            freqs_hz = freq_this;
+            pxx_matrix = zeros(numel(freq_this), n_channels);
+        elseif ~isequal(size(freqs_hz), size(freq_this)) || any(abs(freqs_hz - freq_this) > 1e-12)
+            error('PSD frequency grids do not match across channels.');
+        end
+        pxx_matrix(:, channel_idx) = pxx_this;
+    end
+end
+
+
 function x = irfft_matrix(one_sided_spectrum, n_time)
     if isvector(one_sided_spectrum)
         one_sided_spectrum = one_sided_spectrum(:);
@@ -2155,6 +2377,30 @@ function write_reconstruction_diagnostics_csv(result, path_out)
         end
         fprintf(fid, ',%.16g,%.16g,%d\n', result.response_mac(k), result.relative_residual(k), ...
             logical_to_int(result.valid_mask(k)));
+    end
+end
+
+
+function write_recovery_psd_csv(recovery, path_out)
+    fid = fopen(path_out, 'w');
+    if fid < 0
+        error('Could not open %s for writing.', path_out);
+    end
+    cleanup = onCleanup(@() fclose(fid));
+
+    header_parts = {'freq_hz'};
+    for channel_idx = 1:numel(recovery.channel_names)
+        token = sanitize_csv_token(recovery.channel_names{channel_idx});
+        header_parts{end + 1} = sprintf('%s_g2_per_hz', token); %#ok<AGROW>
+    end
+    fprintf(fid, '%s\n', strjoin(header_parts, ','));
+
+    for k = 1:numel(recovery.psd_freqs_hz)
+        fprintf(fid, '%.16g', recovery.psd_freqs_hz(k));
+        for channel_idx = 1:size(recovery.psd_g2_per_hz, 2)
+            fprintf(fid, ',%.16g', recovery.psd_g2_per_hz(k, channel_idx));
+        end
+        fprintf(fid, '\n');
     end
 end
 

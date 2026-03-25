@@ -96,6 +96,7 @@ The MATLAB pipeline runs the same windowed frequency-by-frequency inversion and 
 
 - `F_hat_spectrum.csv`
 - `reconstruction_diagnostics.csv`
+- `recovery_predicted_psd.csv` for recovery-only response locations in `g^2/Hz`
 - a NASTRAN `TABLED1` include file with real/imaginary force spectra in `N` or `lbf`
 - a SOL111 replay-deck skeleton with `DAREA`, `RLOAD1`, `DLOAD`, and the `TABLED1` include
 
@@ -113,6 +114,14 @@ every flight FFT bin. You can also iterate on the inverse problem by setting
 `active_channel_idx` to solve with only a selected subset of response channels.
 If your PSD plots start too high in frequency, increase `psd_nperseg`; the first
 nonzero Welch bin is approximately `fs / psd_nperseg`.
+
+If you need responses at uninstrumented model locations, provide a second mobility
+stack through `recovery_mobility_paths`. Those CSVs use the same
+`freq_hz,re0,im0,re1,im1,...` format, but the column pairs correspond to the
+recovery response locations instead of the instrumented flight channels. The file
+order must match the solved load-case order. MATLAB uses the solved `F_hat`,
+synthesizes the recovery acceleration time histories on the same flight window, and
+exports Welch PSDs in `g^2/Hz` through `save_recovery_psd_csv`.
 
 Example:
 
@@ -134,6 +143,8 @@ opts = struct( ...
     'plot_psd_fmin_hz', 10.0, ...
     'plot_psd_fmax_hz', 3000.0, ...
     'psd_nperseg', 2048, ...
+    'recovery_mobility_paths', {'recovery_Fx.csv', 'recovery_Fy.csv', 'recovery_Fz.csv'}, ...
+    'save_recovery_psd_csv', 'recovery_predicted_psd.csv', ...
     'plot_lambda_sweep', true, ...
     'save_nastran_tabled1', 'reconstructed_forces_nastran.inc', ...
     'save_nastran_replay_bdf', 'reconstructed_forces_replay.bdf', ...

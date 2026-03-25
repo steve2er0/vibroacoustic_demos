@@ -90,6 +90,13 @@ opts.progress_interval_sec = 2.0;
 % Uncomment these to write CSV outputs from MATLAB.
 % opts.save_force_csv = fullfile(repoRoot, 'F_hat_spectrum_matlab.csv');
 % opts.save_diagnostics_csv = fullfile(repoRoot, 'reconstruction_diagnostics_matlab.csv');
+% opts.recovery_mobility_paths = {
+%     '/path/to/recovery_Fx.csv'
+%     '/path/to/recovery_Fy.csv'
+%     '/path/to/recovery_Fz.csv'
+% };
+% opts.save_recovery_psd_csv = fullfile(repoRoot, 'recovery_predicted_psd_matlab.csv');
+% opts.recovery_channel_names = {'grid123_t3' 'grid456_t3'};
 %
 % Uncomment these to write a NASTRAN TABLED1 include file in model units.
 % For an lbf-in model, set nastran_force_unit = 'lbf' and keep all
